@@ -19,9 +19,14 @@ export default function OrdersPage() {
   const [editingOrder, setEditingOrder] = useState<any | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<number | null>(null);
 
-  const platforms = ["shopify", "tiktok", "facebook", "instagram", "other"];
+  // ===== Replacing Modal State =====
+  const [replacingOrder, setReplacingOrder] = useState<any | null>(null);
+  const [replacingProductId, setReplacingProductId] = useState("");
+  const [replacingQty, setReplacingQty] = useState("1");
+
+  const platforms = ["shopify", "tiktok", "facebook", "instagram", "WhatsApp", "other"];
   const payments  = ["cash on delivery", "instapay", "credit card", "mylerz", "Abanoub", "Youssef", "Mina"];
-  const statuses  = ["pending", "shipped", "delivered", "canceled"];
+  const statuses  = ["pending", "shipped", "delivered", "canceled", "replacing"];
 
   const emptyForm = {
     customer_name: "", customer_phone: "", product_id: "", product: "",
@@ -82,9 +87,50 @@ export default function OrdersPage() {
   };
 
   const adjustStock = async (productId: number, qtyChange: number) => {
-    const product = products.find(p => p.id === productId);
-    if (!product) return;
-    await supabase.from("products").update({ stock: Math.max(0, product.stock + qtyChange) }).eq("id", productId);
+    // نجيب الـ stock الحالي من الداتابيز مش من الـ state عشان يكون دايما محدث
+    const { data } = await supabase.from("products").select("stock").eq("id", productId).single();
+    if (!data) return;
+    await supabase.from("products").update({ stock: Math.max(0, data.stock + qtyChange) }).eq("id", productId);
+  };
+
+  // ===== Replacing Logic =====
+  const openReplacingModal = (order: any) => {
+    setReplacingOrder(order);
+    setReplacingProductId("");
+    setReplacingQty("1");
+  };
+
+  const handleConfirmReplacing = async () => {
+    if (!replacingOrder || !replacingProductId) return;
+    const newProduct = products.find(p => p.id === parseInt(replacingProductId));
+    if (!newProduct) return;
+    const qty = parseInt(replacingQty) || 1;
+
+    // 1. رجّع stock المنتج القديم
+    if (replacingOrder.product_id && replacingOrder.status?.toLowerCase() !== "canceled" && replacingOrder.status?.toLowerCase() !== "replacing") {
+      await adjustStock(replacingOrder.product_id, replacingOrder.quantity || 1);
+    }
+
+    // 2. انقص stock المنتج الجديد
+    await adjustStock(newProduct.id, -qty);
+
+    // 3. حدّث الـ order — خزّن المنتج القديم في replaced_product وحط المنتج الجديد
+    const newTotal  = newProduct.price * qty;
+    const newProfit = newTotal - (parseFloat(replacingOrder.shipping_price) || 0);
+
+    await supabase.from("orders").update({
+      status: "replacing",
+      replaced_product: replacingOrder.product,        // اسم المنتج القديم للعرض
+      replaced_product_id: replacingOrder.product_id,  // id القديم
+      product_id: newProduct.id,
+      product: newProduct.name,
+      quantity: qty,
+      total_price: newTotal,
+      net_profit: newProfit,
+    }).eq("id", replacingOrder.id);
+
+    setReplacingOrder(null);
+    fetchData();
   };
 
   const handleSubmit = async (e: FormEvent) => {
@@ -101,27 +147,29 @@ export default function OrdersPage() {
     };
 
     if (editingOrder) {
-      const oldQty = editingOrder.quantity || 1;
+      const oldQty       = editingOrder.quantity || 1;
       const oldProductId = editingOrder.product_id;
-      const oldStatus = editingOrder.status?.toLowerCase();
-      const newStatus = formData.status.toLowerCase();
+      const oldStatus    = editingOrder.status?.toLowerCase();
+      const newStatus    = formData.status.toLowerCase();
+      const wasInactive  = ["canceled", "replacing"].includes(oldStatus);
+      const nowInactive  = ["canceled", "replacing"].includes(newStatus);
+
       await supabase.from("orders").update(payload).eq("id", editingOrder.id);
+
       if (productId) {
         const productChanged = oldProductId !== productId;
-        const wasCanceled = oldStatus === "canceled";
-        const nowCanceled = newStatus === "canceled";
         if (productChanged) {
-          if (oldProductId && !wasCanceled) await adjustStock(oldProductId, oldQty);
-          if (!nowCanceled) await adjustStock(productId, -qty);
+          if (oldProductId && !wasInactive) await adjustStock(oldProductId, oldQty);
+          if (!nowInactive) await adjustStock(productId, -qty);
         } else {
-          if (wasCanceled && !nowCanceled) await adjustStock(productId, -qty);
-          else if (!wasCanceled && nowCanceled) await adjustStock(productId, oldQty);
-          else if (!wasCanceled && !nowCanceled && oldQty !== qty) await adjustStock(productId, oldQty - qty);
+          if (wasInactive && !nowInactive) await adjustStock(productId, -qty);
+          else if (!wasInactive && nowInactive) await adjustStock(productId, oldQty);
+          else if (!wasInactive && !nowInactive && oldQty !== qty) await adjustStock(productId, oldQty - qty);
         }
       }
     } else {
       await supabase.from("orders").insert([payload]);
-      if (productId && formData.status.toLowerCase() !== "canceled") {
+      if (productId && !["canceled", "replacing"].includes(formData.status.toLowerCase())) {
         await adjustStock(productId, -qty);
         const { data: prod } = await supabase.from("products").select("sales_count").eq("id", productId).single();
         await supabase.from("products").update({ sales_count: (prod?.sales_count || 0) + 1 }).eq("id", productId);
@@ -133,26 +181,34 @@ export default function OrdersPage() {
 
   const handleDelete = async (id: number) => {
     const order = orders.find(o => o.id === id);
-    if (order?.product_id && order.status?.toLowerCase() !== "canceled") await adjustStock(order.product_id, order.quantity || 1);
+    const isInactive = ["canceled", "replacing"].includes(order?.status?.toLowerCase());
+    if (order?.product_id && !isInactive) await adjustStock(order.product_id, order.quantity || 1);
     await supabase.from("orders").delete().eq("id", id);
     setDeleteConfirmId(null);
     fetchData();
   };
 
   const statusStyle = (s: string) => ({
-    delivered: "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20",
-    shipped:   "bg-blue-500/10 text-blue-400 border border-blue-500/20",
-    pending:   "bg-yellow-500/10 text-yellow-400 border border-yellow-500/20",
-    canceled:  "bg-red-500/10 text-red-400 border border-red-500/20",
+    delivered:  "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20",
+    shipped:    "bg-blue-500/10 text-blue-400 border border-blue-500/20",
+    pending:    "bg-yellow-500/10 text-yellow-400 border border-yellow-500/20",
+    canceled:   "bg-red-500/10 text-red-400 border border-red-500/20",
+    replacing:  "bg-orange-500/10 text-orange-400 border border-orange-500/20",
   }[s?.toLowerCase()] || "bg-zinc-800 text-zinc-400");
 
-  const platformIcon = (p: string) => ({ shopify:"🛒", tiktok:"🎵", facebook:"📘", instagram:"📸", other:"🌐" }[p?.toLowerCase()] || "🌐");
-  const isCanceled = (o: any) => o.status?.toLowerCase() === "canceled";
+  const platformIcon = (p: string) => ({ shopify:"🛒", tiktok:"🎵", facebook:"📘", instagram:"📸", whatsapp:"💬", other:"🌐" }[p?.toLowerCase()] || "🌐");
+
+  const isInactive   = (o: any) => ["canceled", "replacing"].includes(o.status?.toLowerCase());
+  const isReplacing  = (o: any) => o.status?.toLowerCase() === "replacing";
 
   const selectedProduct = products.find(p => p.id === parseInt(formData.product_id));
-  const availableStock = selectedProduct
-    ? selectedProduct.stock + (editingOrder?.product_id === selectedProduct.id && editingOrder?.status?.toLowerCase() !== "canceled" ? (editingOrder?.quantity || 1) : 0)
+  const availableStock  = selectedProduct
+    ? selectedProduct.stock + (editingOrder?.product_id === selectedProduct.id && !["canceled","replacing"].includes(editingOrder?.status?.toLowerCase()) ? (editingOrder?.quantity || 1) : 0)
     : 0;
+
+  // الـ stock المتاح للمنتج الجديد في modal الـ replacing
+  const replacingNewProduct  = products.find(p => p.id === parseInt(replacingProductId));
+  const replacingAvailStock  = replacingNewProduct ? replacingNewProduct.stock : 0;
 
   const inputClass = "w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-zinc-600 transition-colors";
 
@@ -164,7 +220,9 @@ export default function OrdersPage() {
         <div className="flex justify-between items-center">
           <div>
             <h1 className="text-3xl font-bold tracking-tight">Orders</h1>
-            <p className="text-zinc-500 text-sm mt-0.5">{orders.length} total · {orders.filter(o => isCanceled(o)).length} canceled</p>
+            <p className="text-zinc-500 text-sm mt-0.5">
+              {orders.length} total · {orders.filter(o => o.status?.toLowerCase() === "canceled").length} canceled · {orders.filter(o => isReplacing(o)).length} replacing
+            </p>
           </div>
           <button onClick={openNew} className="bg-white text-black px-4 py-2.5 rounded-lg font-bold text-sm hover:bg-zinc-200 transition-colors whitespace-nowrap">
             + New Order
@@ -176,28 +234,31 @@ export default function OrdersPage() {
           {orders.length === 0 ? (
             <div className="text-center text-zinc-600 py-16 text-sm border border-zinc-800 rounded-xl bg-[#09090b]">No orders yet.</div>
           ) : orders.map((o) => (
-            <div key={o.id} className={`bg-[#09090b] border border-zinc-800 rounded-xl p-4 space-y-3 ${isCanceled(o) ? "opacity-40" : ""}`}>
-              {/* Row 1: ID + Status */}
+            <div key={o.id} className={`bg-[#09090b] border border-zinc-800 rounded-xl p-4 space-y-3 ${isInactive(o) ? "opacity-50" : ""}`}>
               <div className="flex items-center justify-between">
-                <span className={`font-mono text-xs text-zinc-500 ${isCanceled(o) ? "line-through" : ""}`}>#M{o.id}</span>
+                <span className={`font-mono text-xs text-zinc-500 ${isInactive(o) ? "line-through" : ""}`}>#M{o.id}</span>
                 <span className={`px-2 py-1 rounded-md text-[11px] font-medium uppercase tracking-wide ${statusStyle(o.status)}`}>{o.status}</span>
               </div>
-              {/* Row 2: Customer */}
               <div>
-                <p className={`font-bold text-white ${isCanceled(o) ? "line-through text-zinc-500" : ""}`}>{o.customer_name}</p>
+                <p className={`font-bold text-white ${isInactive(o) ? "line-through text-zinc-500" : ""}`}>{o.customer_name}</p>
                 {o.customer_phone && <p className="text-zinc-500 text-xs mt-0.5">{o.customer_phone}</p>}
               </div>
-              {/* Row 3: Product + Qty */}
+              {/* المنتج — لو replacing بيظهر القديم مشطوب والجديد */}
               <div className="flex items-center justify-between text-sm">
-                <span className="text-zinc-300">{o.product || "—"}</span>
+                <div>
+                  {isReplacing(o) && o.replaced_product && (
+                    <p className="text-zinc-600 text-xs line-through">{o.replaced_product}</p>
+                  )}
+                  <span className={isInactive(o) && !isReplacing(o) ? "line-through text-zinc-500" : "text-zinc-300"}>
+                    {o.product || "—"}
+                  </span>
+                </div>
                 <span className="text-zinc-500 text-xs">× {o.quantity || 1}</span>
               </div>
-              {/* Row 4: Platform + Payment */}
               <div className="flex items-center justify-between text-xs text-zinc-500">
                 <span>{platformIcon(o.platform)} {o.platform}</span>
                 <span className="capitalize">{o.payment_method}</span>
               </div>
-              {/* Row 5: Financials */}
               <div className="border-t border-zinc-800 pt-3 flex items-center justify-between">
                 <div className="text-xs text-zinc-500">
                   Total: <span className="text-white font-mono font-medium">EGP {o.total_price?.toLocaleString()}</span>
@@ -206,7 +267,6 @@ export default function OrdersPage() {
                 </div>
                 <span className="text-emerald-400 font-bold font-mono text-sm">EGP {o.net_profit?.toLocaleString()}</span>
               </div>
-              {/* Row 6: Actions */}
               <div className="flex gap-2">
                 <button onClick={() => openEdit(o)} className="flex-1 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs rounded-lg font-medium transition-colors">Edit</button>
                 <button onClick={() => setDeleteConfirmId(o.id)} className="flex-1 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs rounded-lg font-medium transition-colors">Delete</button>
@@ -237,20 +297,32 @@ export default function OrdersPage() {
               {orders.length === 0 ? (
                 <tr><td colSpan={11} className="text-center text-zinc-600 py-16 text-sm">No orders yet.</td></tr>
               ) : orders.map((o) => (
-                <tr key={o.id} className={`hover:bg-zinc-900/30 transition-colors ${isCanceled(o) ? "opacity-40" : ""}`}>
-                  <td className="px-4 py-3 font-mono text-zinc-600 text-xs"><span className={isCanceled(o) ? "line-through" : ""}>#M{o.id}</span></td>
+                <tr key={o.id} className={`hover:bg-zinc-900/30 transition-colors ${isInactive(o) ? "opacity-50" : ""}`}>
+                  <td className="px-4 py-3 font-mono text-zinc-600 text-xs">
+                    <span className={isInactive(o) ? "line-through" : ""}>#M{o.id}</span>
+                  </td>
                   <td className="px-4 py-3">
-                    <p className={`font-semibold text-white text-sm ${isCanceled(o) ? "line-through text-zinc-500" : ""}`}>{o.customer_name}</p>
+                    <p className={`font-semibold text-white text-sm ${isInactive(o) ? "line-through text-zinc-500" : ""}`}>{o.customer_name}</p>
                     {o.customer_phone && <p className="text-zinc-500 text-xs mt-0.5">{o.customer_phone}</p>}
                   </td>
-                  <td className="px-4 py-3 text-zinc-300 text-sm">{o.product || "—"}</td>
+                  {/* Product cell — لو replacing يظهر القديم مشطوب فوق والجديد تحت */}
+                  <td className="px-4 py-3">
+                    {isReplacing(o) && o.replaced_product && (
+                      <p className="text-zinc-600 text-xs line-through mb-0.5">{o.replaced_product}</p>
+                    )}
+                    <p className={`text-sm ${isInactive(o) && !isReplacing(o) ? "line-through text-zinc-500" : "text-zinc-300"}`}>
+                      {o.product || "—"}
+                    </p>
+                  </td>
                   <td className="px-4 py-3 font-mono text-zinc-400 text-sm">{o.quantity || 1}</td>
                   <td className="px-4 py-3"><span className="flex items-center gap-1.5 text-zinc-400 text-xs capitalize">{platformIcon(o.platform)} {o.platform || "—"}</span></td>
                   <td className="px-4 py-3 text-zinc-400 text-xs capitalize">{o.payment_method || "—"}</td>
                   <td className="px-4 py-3 font-mono text-white text-sm">{o.total_price?.toLocaleString()}</td>
                   <td className="px-4 py-3 font-mono text-blue-400 text-sm">{o.shipping_price?.toLocaleString()}</td>
                   <td className="px-4 py-3 font-mono text-emerald-400 font-bold text-sm">{o.net_profit?.toLocaleString()}</td>
-                  <td className="px-4 py-3"><span className={`px-2 py-1 rounded-md text-[11px] font-medium uppercase tracking-wide ${statusStyle(o.status)}`}>{o.status}</span></td>
+                  <td className="px-4 py-3">
+                    <span className={`px-2 py-1 rounded-md text-[11px] font-medium uppercase tracking-wide ${statusStyle(o.status)}`}>{o.status}</span>
+                  </td>
                   <td className="px-4 py-3 text-right">
                     <div className="flex items-center justify-end gap-2">
                       <button onClick={() => openEdit(o)} className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs rounded-lg transition-colors font-medium">Edit</button>
@@ -262,6 +334,80 @@ export default function OrdersPage() {
             </tbody>
           </table>
         </div>
+
+        {/* ===== Replacing Modal ===== */}
+        {replacingOrder && (
+          <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
+            <div className="bg-zinc-950 border border-zinc-800 rounded-xl w-full max-w-md overflow-hidden">
+              <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-800">
+                <h2 className="text-base font-bold text-white">Replace Order</h2>
+                <button onClick={() => setReplacingOrder(null)} className="text-zinc-500 hover:text-white text-xl leading-none">✕</button>
+              </div>
+              <div className="p-6 space-y-4">
+                {/* المنتج القديم */}
+                <div className="bg-zinc-900/60 border border-zinc-800 rounded-lg px-4 py-3">
+                  <p className="text-[11px] text-zinc-500 uppercase tracking-wider mb-1">Current Product</p>
+                  <p className="text-white font-semibold line-through text-zinc-400">{replacingOrder.product || "—"}</p>
+                  <p className="text-xs text-zinc-600 mt-0.5">× {replacingOrder.quantity || 1} · EGP {replacingOrder.total_price?.toLocaleString()}</p>
+                </div>
+
+                {/* المنتج الجديد */}
+                <div>
+                  <p className="text-xs text-zinc-500 font-medium uppercase tracking-wider mb-2">New Product</p>
+                  <select
+                    className={inputClass}
+                    value={replacingProductId}
+                    onChange={(e) => { setReplacingProductId(e.target.value); setReplacingQty("1"); }}
+                  >
+                    <option value="">— Select new product —</option>
+                    {products.map(p => (
+                      <option key={p.id} value={p.id} className="bg-zinc-900">
+                        {p.name} — EGP {p.price} ({p.stock} left)
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* الكمية */}
+                {replacingProductId && (
+                  <div>
+                    <p className="text-xs text-zinc-500 font-medium uppercase tracking-wider mb-2">Quantity</p>
+                    <input
+                      type="number" min="1" max={replacingAvailStock}
+                      className={inputClass}
+                      value={replacingQty}
+                      onChange={(e) => setReplacingQty(e.target.value)}
+                    />
+                    <p className="text-[11px] text-zinc-600 mt-1">{replacingAvailStock} available</p>
+                    {parseInt(replacingQty) > replacingAvailStock && (
+                      <p className="text-xs text-red-400 mt-1">⚠ Exceeds available stock</p>
+                    )}
+                  </div>
+                )}
+
+                {/* Preview */}
+                {replacingNewProduct && replacingQty && (
+                  <div className="bg-orange-500/5 border border-orange-500/20 rounded-lg px-4 py-3">
+                    <p className="text-[11px] text-orange-400 uppercase tracking-wider mb-1">New Order Preview</p>
+                    <p className="text-white font-semibold">{replacingNewProduct.name}</p>
+                    <p className="text-xs text-zinc-400 mt-0.5">× {replacingQty} · EGP {(replacingNewProduct.price * (parseInt(replacingQty) || 1)).toLocaleString()}</p>
+                  </div>
+                )}
+
+                <div className="flex gap-3 pt-2">
+                  <button onClick={() => setReplacingOrder(null)} className="flex-1 py-2.5 bg-zinc-900 hover:bg-zinc-800 text-white rounded-lg text-sm font-medium transition-colors">Cancel</button>
+                  <button
+                    onClick={handleConfirmReplacing}
+                    disabled={!replacingProductId || parseInt(replacingQty) > replacingAvailStock}
+                    className="flex-1 py-2.5 bg-orange-500 hover:bg-orange-600 text-white rounded-lg text-sm font-bold transition-colors disabled:opacity-40"
+                  >
+                    Confirm Replace
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Delete Confirm */}
         {deleteConfirmId !== null && (
@@ -277,7 +423,7 @@ export default function OrdersPage() {
           </div>
         )}
 
-        {/* Modal */}
+        {/* Add / Edit Modal */}
         {isModalOpen && (
           <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
             <form onSubmit={handleSubmit} className="bg-zinc-950 border border-zinc-800 rounded-xl w-full max-w-lg overflow-hidden">
@@ -347,14 +493,23 @@ export default function OrdersPage() {
                 </div>
                 <div>
                   <p className="text-xs text-zinc-500 font-medium uppercase tracking-wider mb-2">Status</p>
-                  <div className="grid grid-cols-2 gap-2 sm:flex sm:gap-2">
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                     {statuses.map(s => (
-                      <button key={s} type="button" onClick={() => setFormData({ ...formData, status: s })}
-                        className={`flex-1 py-2 px-2 rounded-lg text-xs font-semibold capitalize transition-colors border ${
+                      <button key={s} type="button" onClick={() => {
+                        if (s === "replacing" && editingOrder) {
+                          // أغلق الـ edit modal وافتح replacing modal
+                          setIsModalOpen(false);
+                          openReplacingModal(editingOrder);
+                        } else {
+                          setFormData({ ...formData, status: s });
+                        }
+                      }}
+                        className={`py-2 px-2 rounded-lg text-xs font-semibold capitalize transition-colors border ${
                           formData.status === s
                             ? s === "canceled"  ? "bg-red-500/20 text-red-400 border-red-500/40"
                             : s === "delivered" ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/40"
                             : s === "shipped"   ? "bg-blue-500/20 text-blue-400 border-blue-500/40"
+                            : s === "replacing" ? "bg-orange-500/20 text-orange-400 border-orange-500/40"
                                                 : "bg-yellow-500/20 text-yellow-400 border-yellow-500/40"
                             : "bg-zinc-900 text-zinc-500 border-zinc-800 hover:border-zinc-600"
                         }`}>{s}
