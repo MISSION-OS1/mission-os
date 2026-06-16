@@ -18,6 +18,8 @@ interface Order {
   id: number;
   customer_name: string;
   product: string;
+  color?: string;
+  size?: string;
   quantity?: number;
   total_price: number;
   net_profit: number;
@@ -42,17 +44,38 @@ export default function DashboardOverview() {
     fetchDashboardData();
   }, []);
 
-  // ✅ استثناء الأوردرات الـ canceled من كل الحسابات
-  const activeOrders = orders.filter(o => o.status?.toLowerCase() !== 'canceled');
+  const isCanceled = (o: Order) => o.status?.toLowerCase() === 'canceled';
+  const activeOrders   = orders.filter(o => !isCanceled(o));
+  const canceledOrders = orders.filter(o => isCanceled(o));
 
   const totalRevenue = activeOrders.reduce((sum, o) => sum + (o.total_price || 0), 0);
   const totalProfit  = activeOrders.reduce((sum, o) => sum + (o.net_profit || 0), 0);
   const totalOrdersCount = activeOrders.length;
   const uniqueCustomersCount = new Set(activeOrders.map(o => o.customer_name?.trim().toLowerCase() || '')).size;
 
+  // ✅ المرتجعات (Returns / Cancellations)
+  const returnsCount = canceledOrders.length;
+  const returnsValue  = canceledOrders.reduce((sum, o) => sum + (o.total_price || 0), 0);
+
   const lowStockProducts  = products.filter(p => p.stock <= 5).slice(0, 4);
-  const topSellingProducts = [...products].sort((a, b) => (b.sales_count || 0) - (a.sales_count || 0)).slice(0, 4);
-  const recentOrders = orders.slice(0, 5); // أحدث 5 أوردرات بغض النظر عن الـ status
+  const recentOrders = orders.slice(0, 5);
+
+  // ✅ Top Selling محسوب من الـ orders نفسها (على مستوى المنتج + اللون + المقاس)
+  const variantSalesMap: Record<string, { product: string; color?: string; size?: string; qty: number }> = {};
+  activeOrders.forEach(o => {
+    const key = `${o.product}__${o.color || ''}__${o.size || ''}`;
+    if (!variantSalesMap[key]) {
+      variantSalesMap[key] = { product: o.product, color: o.color, size: o.size, qty: 0 };
+    }
+    variantSalesMap[key].qty += o.quantity || 1;
+  });
+  const topSellingVariants = Object.values(variantSalesMap).sort((a, b) => b.qty - a.qty).slice(0, 4);
+
+  const variantLabel = (v: { product: string; color?: string; size?: string }) =>
+    [v.product, v.color, v.size].filter(Boolean).join(' · ');
+
+  const orderLabel = (o: Order) =>
+    [o.product, o.color, o.size].filter(Boolean).join(' · ');
 
   return (
     <DashboardLayout>
@@ -67,7 +90,7 @@ export default function DashboardOverview() {
         ) : (
           <>
             {/* الكروت العلوية */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
 
               <div className="bg-[#09090b] border border-zinc-900 rounded-xl p-5 flex flex-col justify-between h-32 relative">
                 <div>
@@ -105,6 +128,18 @@ export default function DashboardOverview() {
                 <div className="absolute top-5 right-5 w-8 h-8 bg-zinc-900 rounded-lg flex items-center justify-center border border-zinc-800 text-sm text-zinc-400">👥</div>
               </div>
 
+              {/* ✅ كارت المرتجعات الجديد */}
+              <div className="bg-red-500/5 border border-red-500/20 rounded-xl p-5 flex flex-col justify-between h-32 relative">
+                <div>
+                  <p className="text-xs font-medium text-zinc-500">Returns</p>
+                  <p className="text-2xl font-bold text-red-400 mt-1">{returnsCount}</p>
+                </div>
+                <div className="text-[11px] text-red-400/80 flex items-center font-medium">
+                  <span className="mr-1">↘</span> EGP {returnsValue.toLocaleString()} lost
+                </div>
+                <div className="absolute top-5 right-5 w-8 h-8 bg-red-500/10 rounded-lg flex items-center justify-center border border-red-500/20 text-sm text-red-400">↩️</div>
+              </div>
+
             </div>
 
             {/* التقسيمة السفلية */}
@@ -118,16 +153,20 @@ export default function DashboardOverview() {
                     <div className="text-center text-xs text-zinc-600 py-10">No recent orders.</div>
                   ) : (
                     recentOrders.map((order) => (
-                      <div key={order.id} className={`flex justify-between items-center text-xs ${order.status?.toLowerCase() === 'canceled' ? 'opacity-40' : ''}`}>
-                        <div className="flex items-center space-x-3">
-                          <span className="font-mono text-zinc-600">#M{order.id}</span>
-                          <span className={`font-medium text-zinc-300 max-w-[100px] truncate ${order.status?.toLowerCase() === 'canceled' ? 'line-through' : ''}`}>{order.customer_name}</span>
+                      <div key={order.id} className={`flex justify-between items-center text-xs ${isCanceled(order) ? 'opacity-40' : ''}`}>
+                        <div className="flex items-center space-x-3 min-w-0">
+                          <span className="font-mono text-zinc-600 shrink-0">#M{order.id}</span>
+                          <div className="min-w-0">
+                            <p className={`font-medium text-zinc-300 truncate ${isCanceled(order) ? 'line-through' : ''}`}>{order.customer_name}</p>
+                            <p className="text-[10px] text-zinc-500 truncate">{orderLabel(order)}</p>
+                          </div>
                         </div>
-                        <div className="flex items-center space-x-3">
+                        <div className="flex items-center space-x-3 shrink-0">
                           <span className="text-zinc-400 font-medium">EGP {order.total_price}</span>
                           <span className={`px-2 py-0.5 rounded text-[10px] font-medium uppercase ${
                             order.status?.toLowerCase() === 'delivered' ? 'text-green-400 bg-green-500/5' :
                             order.status?.toLowerCase() === 'canceled'  ? 'text-red-400 bg-red-500/5' :
+                            order.status?.toLowerCase() === 'replacing' ? 'text-orange-400 bg-orange-500/5' :
                             order.status?.toLowerCase() === 'shipped'   ? 'text-blue-400 bg-blue-500/5' :
                                                                           'text-yellow-500 bg-yellow-500/5'
                           }`}>{order.status}</span>
@@ -165,20 +204,20 @@ export default function DashboardOverview() {
               <div className="bg-[#09090b] border border-zinc-900 rounded-xl p-5 space-y-4">
                 <h3 className="font-bold text-white text-base">Top Selling</h3>
                 <div className="space-y-3.5">
-                  {products.length === 0 ? (
-                    <div className="text-center text-xs text-zinc-600 py-10">No products found.</div>
+                  {topSellingVariants.length === 0 ? (
+                    <div className="text-center text-xs text-zinc-600 py-10">No sales yet.</div>
                   ) : (
-                    topSellingProducts.map((product, idx) => (
-                      <div key={product.id} className="flex justify-between items-center text-xs">
-                        <div className="flex items-center space-x-3">
-                          <span className="font-mono font-bold text-zinc-600 w-3 text-center">{idx + 1}</span>
-                          <div className="w-9 h-9 bg-zinc-900 border border-zinc-800 rounded-lg flex items-center justify-center text-[10px]">🔥</div>
-                          <div>
-                            <p className="font-medium text-zinc-300">{product.name}</p>
-                            <p className="text-[10px] text-zinc-500 mt-0.5 font-mono">EGP {product.price}</p>
+                    topSellingVariants.map((v, idx) => (
+                      <div key={idx} className="flex justify-between items-center text-xs">
+                        <div className="flex items-center space-x-3 min-w-0">
+                          <span className="font-mono font-bold text-zinc-600 w-3 text-center shrink-0">{idx + 1}</span>
+                          <div className="w-9 h-9 bg-zinc-900 border border-zinc-800 rounded-lg flex items-center justify-center text-[10px] shrink-0">🔥</div>
+                          <div className="min-w-0">
+                            <p className="font-medium text-zinc-300 truncate">{v.product}</p>
+                            <p className="text-[10px] text-zinc-500 mt-0.5 truncate">{[v.color, v.size].filter(Boolean).join(' · ') || '—'}</p>
                           </div>
                         </div>
-                        <span className="font-mono text-zinc-400 font-medium">{product.sales_count || 0} <span className="text-[10px] text-zinc-600">sold</span></span>
+                        <span className="font-mono text-zinc-400 font-medium shrink-0">{v.qty} <span className="text-[10px] text-zinc-600">sold</span></span>
                       </div>
                     ))
                   )}
