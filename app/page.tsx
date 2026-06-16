@@ -22,6 +22,8 @@ interface Order {
   size?: string;
   quantity?: number;
   total_price: number;
+  shipping_price: number;
+  flyer_cost?: number;
   net_profit: number;
   status: string;
   created_at: string;
@@ -44,38 +46,37 @@ export default function DashboardOverview() {
     fetchDashboardData();
   }, []);
 
-  const isCanceled = (o: Order) => o.status?.toLowerCase() === 'canceled';
-  const activeOrders   = orders.filter(o => !isCanceled(o));
+  const isCanceled  = (o: Order) => o.status?.toLowerCase() === 'canceled';
+  const isReplacing = (o: Order) => o.status?.toLowerCase() === 'replacing';
+  const isInactive  = (o: Order) => isCanceled(o) || isReplacing(o);
+
+  const activeOrders   = orders.filter(o => !isInactive(o));
   const canceledOrders = orders.filter(o => isCanceled(o));
+  const replacingOrders = orders.filter(o => isReplacing(o));
 
   const totalRevenue = activeOrders.reduce((sum, o) => sum + (o.total_price || 0), 0);
   const totalProfit  = activeOrders.reduce((sum, o) => sum + (o.net_profit || 0), 0);
   const totalOrdersCount = activeOrders.length;
   const uniqueCustomersCount = new Set(activeOrders.map(o => o.customer_name?.trim().toLowerCase() || '')).size;
 
-  // ✅ المرتجعات (Returns / Cancellations)
+  // ✅ المرتجعات = shipping + flyer cost فقط، مش سعر القطعة
+  const returnsValue = canceledOrders.reduce((sum, o) => sum + (o.shipping_price || 0) + (o.flyer_cost || 0), 0);
   const returnsCount = canceledOrders.length;
-  const returnsValue  = canceledOrders.reduce((sum, o) => sum + (o.total_price || 0), 0);
+
+  const replacingCount = replacingOrders.length;
 
   const lowStockProducts  = products.filter(p => p.stock <= 5).slice(0, 4);
   const recentOrders = orders.slice(0, 5);
 
-  // ✅ Top Selling محسوب من الـ orders نفسها (على مستوى المنتج + اللون + المقاس)
   const variantSalesMap: Record<string, { product: string; color?: string; size?: string; qty: number }> = {};
   activeOrders.forEach(o => {
     const key = `${o.product}__${o.color || ''}__${o.size || ''}`;
-    if (!variantSalesMap[key]) {
-      variantSalesMap[key] = { product: o.product, color: o.color, size: o.size, qty: 0 };
-    }
+    if (!variantSalesMap[key]) variantSalesMap[key] = { product: o.product, color: o.color, size: o.size, qty: 0 };
     variantSalesMap[key].qty += o.quantity || 1;
   });
   const topSellingVariants = Object.values(variantSalesMap).sort((a, b) => b.qty - a.qty).slice(0, 4);
 
-  const variantLabel = (v: { product: string; color?: string; size?: string }) =>
-    [v.product, v.color, v.size].filter(Boolean).join(' · ');
-
-  const orderLabel = (o: Order) =>
-    [o.product, o.color, o.size].filter(Boolean).join(' · ');
+  const orderLabel = (o: Order) => [o.product, o.color, o.size].filter(Boolean).join(' · ');
 
   return (
     <DashboardLayout>
@@ -90,8 +91,7 @@ export default function DashboardOverview() {
         ) : (
           <>
             {/* الكروت العلوية */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               <div className="bg-[#09090b] border border-zinc-900 rounded-xl p-5 flex flex-col justify-between h-32 relative">
                 <div>
                   <p className="text-xs font-medium text-zinc-500">Revenue</p>
@@ -128,18 +128,27 @@ export default function DashboardOverview() {
                 <div className="absolute top-5 right-5 w-8 h-8 bg-zinc-900 rounded-lg flex items-center justify-center border border-zinc-800 text-sm text-zinc-400">👥</div>
               </div>
 
-              {/* ✅ كارت المرتجعات الجديد */}
+              {/* Canceled / Returns */}
               <div className="bg-red-500/5 border border-red-500/20 rounded-xl p-5 flex flex-col justify-between h-32 relative">
                 <div>
-                  <p className="text-xs font-medium text-zinc-500">Returns</p>
+                  <p className="text-xs font-medium text-zinc-500">Canceled</p>
                   <p className="text-2xl font-bold text-red-400 mt-1">{returnsCount}</p>
                 </div>
                 <div className="text-[11px] text-red-400/80 flex items-center font-medium">
-                  <span className="mr-1">↘</span> EGP {returnsValue.toLocaleString()} lost
+                  <span className="mr-1">↘</span> EGP {returnsValue.toLocaleString()} (ship + flyer)
                 </div>
                 <div className="absolute top-5 right-5 w-8 h-8 bg-red-500/10 rounded-lg flex items-center justify-center border border-red-500/20 text-sm text-red-400">↩️</div>
               </div>
 
+              {/* Replacing */}
+              <div className="bg-orange-500/5 border border-orange-500/20 rounded-xl p-5 flex flex-col justify-between h-32 relative">
+                <div>
+                  <p className="text-xs font-medium text-zinc-500">Replacing</p>
+                  <p className="text-2xl font-bold text-orange-400 mt-1">{replacingCount}</p>
+                </div>
+                <div className="text-[11px] text-orange-400/80 flex items-center font-medium"><span className="mr-1">⇄</span> Orders being swapped</div>
+                <div className="absolute top-5 right-5 w-8 h-8 bg-orange-500/10 rounded-lg flex items-center justify-center border border-orange-500/20 text-sm text-orange-400">🔁</div>
+              </div>
             </div>
 
             {/* التقسيمة السفلية */}

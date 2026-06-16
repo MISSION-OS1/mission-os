@@ -35,6 +35,10 @@ export default function OrdersPage() {
   const [replacingVariantId, setReplacingVariantId] = useState("");
   const [replacingQty, setReplacingQty] = useState("1");
 
+  // ===== Cancel + Flyer Cost State =====
+  const [cancelingOrder, setCancelingOrder] = useState<any | null>(null);
+  const [flyerCostInput, setFlyerCostInput] = useState("5");
+
   const platforms = ["shopify", "tiktok", "facebook", "instagram", "WhatsApp", "other"];
   const payments  = ["cash on delivery", "instapay", "credit card", "mylerz", "Abanoub", "Youssef", "Mina"];
   const statuses  = ["pending", "shipped", "delivered", "canceled", "replacing"];
@@ -64,7 +68,6 @@ export default function OrdersPage() {
     setFormData(prev => ({ ...prev, net_profit: (total - shipping).toString() }));
   }, [formData.total_price, formData.shipping_price]);
 
-  // الـ variants للمنتج المختار في الـ form
   const selectedProduct   = products.find(p => p.id === parseInt(formData.product_id));
   const selectedVariants  = selectedProduct?.variants || [];
   const availableColors   = [...new Set(selectedVariants.map(v => v.color))];
@@ -129,7 +132,6 @@ export default function OrdersPage() {
     if (!data) return;
     const newStock = Math.max(0, data.stock + qtyChange);
     await supabase.from("product_variants").update({ stock: newStock }).eq("id", variantId);
-    // تحديث الـ stock الكلي في products
     const { data: allVariants } = await supabase.from("product_variants").select("stock").eq("product_id", data.product_id);
     if (allVariants) {
       const total = allVariants.reduce((s: number, v: any) => s + v.stock, 0);
@@ -138,6 +140,32 @@ export default function OrdersPage() {
   };
 
   const isInactiveStatus = (s: string) => ["canceled", "replacing"].includes(s?.toLowerCase());
+
+  // ===== Cancel flow with flyer cost =====
+  const openCancelModal = (order: any) => {
+    setCancelingOrder(order);
+    setFlyerCostInput("5");
+  };
+
+  const confirmCancel = async () => {
+    if (!cancelingOrder) return;
+    const flyerCost = parseFloat(flyerCostInput) || 0;
+
+    // رجّع الـ stock لو الأوردر مكنش canceled/replacing قبل كده
+    if (cancelingOrder.variant_id && !isInactiveStatus(cancelingOrder.status)) {
+      await adjustVariantStock(cancelingOrder.variant_id, cancelingOrder.quantity || 1);
+    }
+
+    await supabase.from("orders").update({ status: "canceled", flyer_cost: flyerCost }).eq("id", cancelingOrder.id);
+
+    // لو كانت دي الأوردر المفتوحة في الـ edit modal، قفلها وحدّث الـ formData
+    if (editingOrder?.id === cancelingOrder.id) {
+      setIsModalOpen(false);
+    }
+
+    setCancelingOrder(null);
+    fetchData();
+  };
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -203,7 +231,6 @@ export default function OrdersPage() {
     fetchData();
   };
 
-  // Replacing
   const openReplacingModal = (order: any) => { setReplacingOrder(order); setReplacingProductId(""); setReplacingVariantId(""); setReplacingQty("1"); };
 
   const replacingProduct  = products.find(p => p.id === parseInt(replacingProductId));
@@ -305,6 +332,9 @@ export default function OrdersPage() {
                   Total: <span className="text-white font-mono font-medium">EGP {o.total_price?.toLocaleString()}</span>
                   <span className="mx-2">·</span>
                   Ship: <span className="text-blue-400 font-mono">EGP {o.shipping_price?.toLocaleString()}</span>
+                  {o.status?.toLowerCase() === 'canceled' && (
+                    <><span className="mx-2">·</span>Flyer: <span className="text-red-400 font-mono">EGP {o.flyer_cost?.toLocaleString() || 0}</span></>
+                  )}
                 </div>
                 <span className="text-emerald-400 font-bold font-mono text-sm">EGP {o.net_profit?.toLocaleString()}</span>
               </div>
@@ -361,7 +391,12 @@ export default function OrdersPage() {
                   <td className="px-4 py-3"><span className="flex items-center gap-1.5 text-zinc-400 text-xs capitalize">{platformIcon(o.platform)} {o.platform || "—"}</span></td>
                   <td className="px-4 py-3 text-zinc-400 text-xs capitalize">{o.payment_method || "—"}</td>
                   <td className="px-4 py-3 font-mono text-white text-sm">{o.total_price?.toLocaleString()}</td>
-                  <td className="px-4 py-3 font-mono text-blue-400 text-sm">{o.shipping_price?.toLocaleString()}</td>
+                  <td className="px-4 py-3 font-mono text-blue-400 text-sm">
+                    {o.shipping_price?.toLocaleString()}
+                    {o.status?.toLowerCase() === 'canceled' && o.flyer_cost > 0 && (
+                      <span className="block text-[10px] text-red-400 font-sans">+ {o.flyer_cost} flyer</span>
+                    )}
+                  </td>
                   <td className="px-4 py-3 font-mono text-emerald-400 font-bold text-sm">{o.net_profit?.toLocaleString()}</td>
                   <td className="px-4 py-3"><span className={`px-2 py-1 rounded-md text-[11px] font-medium uppercase tracking-wide ${statusStyle(o.status)}`}>{o.status}</span></td>
                   <td className="px-4 py-3 text-right">
@@ -375,6 +410,38 @@ export default function OrdersPage() {
             </tbody>
           </table>
         </div>
+
+        {/* ===== Cancel + Flyer Cost Modal ===== */}
+        {cancelingOrder && (
+          <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
+            <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-6 w-full max-w-sm space-y-4">
+              <h2 className="text-lg font-bold text-white">Cancel Order</h2>
+              <p className="text-sm text-zinc-400">
+                Shipping cost for this order: <span className="text-blue-400 font-mono">EGP {cancelingOrder.shipping_price?.toLocaleString() || 0}</span>
+              </p>
+              <div>
+                <label className="block text-xs font-semibold text-zinc-400 uppercase mb-1">Flyer Cost (EGP)</label>
+                <input
+                  type="number" min="0" step="0.01" autoFocus
+                  value={flyerCostInput}
+                  onChange={(e) => setFlyerCostInput(e.target.value)}
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-zinc-600"
+                />
+              </div>
+              <div className="bg-red-500/5 border border-red-500/20 rounded-lg px-4 py-3">
+                <p className="text-[11px] text-red-400 uppercase tracking-wider mb-1">Total Return Loss</p>
+                <p className="text-xl font-bold text-red-400 font-mono">
+                  EGP {((cancelingOrder.shipping_price || 0) + (parseFloat(flyerCostInput) || 0)).toLocaleString()}
+                </p>
+                <p className="text-[11px] text-zinc-500 mt-0.5">Shipping + Flyer (stock will be restored)</p>
+              </div>
+              <div className="flex gap-3">
+                <button onClick={() => setCancelingOrder(null)} className="flex-1 py-2.5 bg-zinc-900 hover:bg-zinc-800 text-white rounded-lg text-sm font-medium transition-colors">Back</button>
+                <button onClick={confirmCancel} className="flex-1 py-2.5 bg-red-500 hover:bg-red-600 text-white rounded-lg text-sm font-bold transition-colors">Confirm Cancel</button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Replacing Modal */}
         {replacingOrder && (
@@ -479,7 +546,6 @@ export default function OrdersPage() {
               </div>
               <div className="p-6 space-y-4 max-h-[75vh] overflow-y-auto">
 
-                {/* Customer */}
                 <div>
                   <p className="text-xs text-zinc-500 font-medium uppercase tracking-wider mb-2">Customer</p>
                   <div className="grid grid-cols-2 gap-3">
@@ -488,7 +554,6 @@ export default function OrdersPage() {
                   </div>
                 </div>
 
-                {/* Product */}
                 <div>
                   <p className="text-xs text-zinc-500 font-medium uppercase tracking-wider mb-2">Product</p>
                   <select className={inputClass} value={formData.product_id} onChange={(e) => handleProductChange(e.target.value)}>
@@ -497,7 +562,6 @@ export default function OrdersPage() {
                   </select>
                 </div>
 
-                {/* Color */}
                 {availableColors.length > 0 && (
                   <div>
                     <p className="text-xs text-zinc-500 font-medium uppercase tracking-wider mb-2">Color</p>
@@ -512,7 +576,6 @@ export default function OrdersPage() {
                   </div>
                 )}
 
-                {/* Size */}
                 {formData.color && availableSizes.length > 0 && (
                   <div>
                     <p className="text-xs text-zinc-500 font-medium uppercase tracking-wider mb-2">Size</p>
@@ -532,7 +595,6 @@ export default function OrdersPage() {
                   </div>
                 )}
 
-                {/* Qty */}
                 {formData.size && (
                   <div>
                     <p className="text-xs text-zinc-500 font-medium uppercase tracking-wider mb-2">Quantity</p>
@@ -542,7 +604,6 @@ export default function OrdersPage() {
                   </div>
                 )}
 
-                {/* Platform */}
                 <div>
                   <p className="text-xs text-zinc-500 font-medium uppercase tracking-wider mb-2">Platform</p>
                   <select className={inputClass} value={formData.platform} onChange={(e) => setFormData({ ...formData, platform: e.target.value })}>
@@ -550,7 +611,6 @@ export default function OrdersPage() {
                   </select>
                 </div>
 
-                {/* Pricing */}
                 <div>
                   <p className="text-xs text-zinc-500 font-medium uppercase tracking-wider mb-2">Pricing</p>
                   <div className="grid grid-cols-3 gap-3">
@@ -569,7 +629,6 @@ export default function OrdersPage() {
                   </div>
                 </div>
 
-                {/* Payment */}
                 <div>
                   <p className="text-xs text-zinc-500 font-medium uppercase tracking-wider mb-2">Payment Method</p>
                   <div className="grid grid-cols-2 gap-2">
@@ -582,13 +641,13 @@ export default function OrdersPage() {
                   </div>
                 </div>
 
-                {/* Status */}
                 <div>
                   <p className="text-xs text-zinc-500 font-medium uppercase tracking-wider mb-2">Status</p>
                   <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                     {statuses.map(s => (
                       <button key={s} type="button" onClick={() => {
                         if (s === "replacing" && editingOrder) { setIsModalOpen(false); openReplacingModal(editingOrder); }
+                        else if (s === "canceled" && editingOrder) { setIsModalOpen(false); openCancelModal(editingOrder); }
                         else setFormData({ ...formData, status: s });
                       }}
                         className={`py-2 px-2 rounded-lg text-xs font-semibold capitalize transition-colors border ${
