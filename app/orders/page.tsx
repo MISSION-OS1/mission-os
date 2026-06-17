@@ -73,7 +73,7 @@ export default function OrdersPage() {
   const selectedProduct   = products.find(p => p.id === parseInt(formData.product_id));
   const selectedVariants  = selectedProduct?.variants || [];
   const availableColors   = [...new Set(selectedVariants.map(v => v.color))];
-  const availableSizes    = selectedVariants.filter(v => v.color === formData.color).map(v => v.size);
+  const availableSizes    = SIZES.filter(s => selectedVariants.some(v => v.color === formData.color && v.size === s));
   const selectedVariant   = selectedVariants.find(v => v.color === formData.color && v.size === formData.size);
   const isInactiveStatus  = (s: string) => s?.toLowerCase() === "canceled";
   const availableStock    = selectedVariant
@@ -238,7 +238,7 @@ export default function OrdersPage() {
   const replacingProduct  = products.find(p => p.id === parseInt(replacingProductId));
   const replacingVariants = replacingProduct?.variants || [];
   const replacingColors   = [...new Set(replacingVariants.map(v => v.color))];
-  const replacingSizes    = replacingVariants.filter(v => v.color === replacingColor).map(v => v.size);
+  const replacingSizes    = SIZES.filter(s => replacingVariants.some(v => v.color === replacingColor && v.size === s));
   const replacingVariant  = replacingVariants.find(v => v.color === replacingColor && v.size === replacingSize);
   const replacingAvailStock = replacingVariant?.stock || 0;
 
