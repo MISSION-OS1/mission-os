@@ -199,7 +199,6 @@ export default function CustomersPage() {
                       <th className="p-4 text-center">Payment</th>
                       <th className="p-4 text-right">Total Spent</th>
                       <th className="p-4 text-right">Date</th>
-                      <th className="p-4 text-right">History</th>
                     </tr>
                   </thead>
                   <tbody className="text-sm text-zinc-300">

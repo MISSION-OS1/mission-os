@@ -26,6 +26,7 @@ interface Order {
   flyer_cost?: number;
   net_profit: number;
   status: string;
+  was_replaced?: boolean;
   created_at: string;
 }
 
@@ -47,8 +48,8 @@ export default function DashboardOverview() {
   }, []);
 
   const isCanceled  = (o: Order) => o.status?.toLowerCase() === 'canceled';
-  const isReplacing = (o: Order) => o.status?.toLowerCase() === 'replacing';
-  const isInactive  = (o: Order) => isCanceled(o) || isReplacing(o);
+  const isReplacing = (o: Order) => !!o.was_replaced;
+  const isInactive  = (o: Order) => isCanceled(o);
 
   const activeOrders   = orders.filter(o => !isInactive(o));
   const canceledOrders = orders.filter(o => isCanceled(o));
@@ -140,14 +141,14 @@ export default function DashboardOverview() {
                 <div className="absolute top-5 right-5 w-8 h-8 bg-red-500/10 rounded-lg flex items-center justify-center border border-red-500/20 text-sm text-red-400">↩️</div>
               </div>
 
-              {/* Replacing */}
-              <div className="bg-orange-500/5 border border-orange-500/20 rounded-xl p-5 flex flex-col justify-between h-32 relative">
+              {/* Replaced */}
+              <div className="bg-purple-500/5 border border-purple-500/20 rounded-xl p-5 flex flex-col justify-between h-32 relative">
                 <div>
-                  <p className="text-xs font-medium text-zinc-500">Replacing</p>
-                  <p className="text-2xl font-bold text-orange-400 mt-1">{replacingCount}</p>
+                  <p className="text-xs font-medium text-zinc-500">Replaced</p>
+                  <p className="text-2xl font-bold text-purple-400 mt-1">{replacingCount}</p>
                 </div>
-                <div className="text-[11px] text-orange-400/80 flex items-center font-medium"><span className="mr-1">⇄</span> Orders being swapped</div>
-                <div className="absolute top-5 right-5 w-8 h-8 bg-orange-500/10 rounded-lg flex items-center justify-center border border-orange-500/20 text-sm text-orange-400">🔁</div>
+                <div className="text-[11px] text-purple-400/80 flex items-center font-medium"><span className="mr-1">⇄</span> Orders with item swapped</div>
+                <div className="absolute top-5 right-5 w-8 h-8 bg-purple-500/10 rounded-lg flex items-center justify-center border border-purple-500/20 text-sm text-purple-400">🔁</div>
               </div>
             </div>
 
@@ -168,13 +169,17 @@ export default function DashboardOverview() {
                             <span className="font-mono text-zinc-600 shrink-0">#M{order.id}</span>
                             <p className={`font-medium text-zinc-300 truncate ${isCanceled(order) ? 'line-through' : ''}`}>{order.customer_name}</p>
                           </div>
-                          <span className={`px-2 py-0.5 rounded text-[10px] font-medium uppercase shrink-0 ${
-                            order.status?.toLowerCase() === 'delivered' ? 'text-green-400 bg-green-500/5' :
-                            order.status?.toLowerCase() === 'canceled'  ? 'text-red-400 bg-red-500/5' :
-                            order.status?.toLowerCase() === 'replacing' ? 'text-orange-400 bg-orange-500/5' :
-                            order.status?.toLowerCase() === 'shipped'   ? 'text-blue-400 bg-blue-500/5' :
-                                                                          'text-yellow-500 bg-yellow-500/5'
-                          }`}>{order.status}</span>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            {order.was_replaced && (
+                              <span className="px-2 py-0.5 rounded text-[10px] font-medium uppercase bg-purple-500/10 text-purple-400">Replaced</span>
+                            )}
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-medium uppercase ${
+                              order.status?.toLowerCase() === 'delivered' ? 'text-green-400 bg-green-500/5' :
+                              order.status?.toLowerCase() === 'canceled'  ? 'text-red-400 bg-red-500/5' :
+                              order.status?.toLowerCase() === 'shipped'   ? 'text-blue-400 bg-blue-500/5' :
+                                                                            'text-yellow-500 bg-yellow-500/5'
+                            }`}>{order.status}</span>
+                          </div>
                         </div>
                         <div className="flex items-center justify-between gap-2 pl-7">
                           <p className="text-[10px] text-zinc-500 truncate min-w-0">{orderLabel(order)}</p>
