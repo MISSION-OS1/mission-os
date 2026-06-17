@@ -291,15 +291,9 @@ export default function OrdersPage() {
   const inputClass = "w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-zinc-600 transition-colors";
 
   // ✅ نص واضح يقول إيه اللي اتغير بالظبط (منتج، لون، مقاس)
-  const norm = (v?: string) => (v || '').trim().toLowerCase();
-
-  const replacementDiff = (o: any) => {
-    const parts: { type: 'product' | 'color' | 'size'; from: string; to: string }[] = [];
-    if (o.replaced_product && norm(o.replaced_product) !== norm(o.product)) parts.push({ type: 'product', from: o.replaced_product, to: o.product });
-    if (o.replaced_color && norm(o.replaced_color) !== norm(o.color))       parts.push({ type: 'color', from: o.replaced_color, to: o.color });
-    if (o.replaced_size && norm(o.replaced_size) !== norm(o.size))         parts.push({ type: 'size', from: o.replaced_size, to: o.size });
-    return parts;
-  };
+  // المنتج القديم كامل (اسم + لون + مقاس) قدام المنتج الجديد كامل، حتى لو بعض الحقول متطابقة
+  const replacementLabel = (full: { product?: string; color?: string; size?: string }) =>
+    [full.product, full.color, full.size].filter(Boolean).join(' · ');
 
   return (
     <DashboardLayout>
@@ -335,15 +329,15 @@ export default function OrdersPage() {
                 {o.customer_phone && <p className="text-zinc-500 text-xs mt-0.5">{o.customer_phone}</p>}
               </div>
               <div className="space-y-0.5">
-                {o.was_replaced && replacementDiff(o).map((d, i) => (
-                  <p key={i} className="text-zinc-600 text-xs"><span className="line-through">{d.from}</span> <span className="text-purple-400">→</span> <span className="text-zinc-300">{d.to}</span></p>
-                ))}
-                {!o.was_replaced && <p className="text-sm text-zinc-300">{o.product || "—"}</p>}
-                {o.was_replaced && replacementDiff(o).length === 0 && <p className="text-sm text-zinc-300">{o.product || "—"}</p>}
-                {(o.color || o.size) && !o.was_replaced && (
-                  <p className="text-xs text-zinc-500">{o.color} · {o.size} · ×{o.quantity || 1}</p>
-                )}
                 {o.was_replaced && (
+                  <p className="text-zinc-600 text-xs line-through">
+                    {replacementLabel({ product: o.replaced_product, color: o.replaced_color, size: o.replaced_size })}
+                  </p>
+                )}
+                <p className={`text-sm ${isInactive(o) && !o.was_replaced ? "line-through text-zinc-500" : "text-zinc-300"}`}>
+                  {o.product || "—"}
+                </p>
+                {(o.color || o.size) && (
                   <p className="text-xs text-zinc-500">{o.color} · {o.size} · ×{o.quantity || 1}</p>
                 )}
               </div>
@@ -393,12 +387,7 @@ export default function OrdersPage() {
             <tbody className="divide-y divide-zinc-800/60">
               {orders.length === 0 ? (
                 <tr><td colSpan={12} className="text-center text-zinc-600 py-16 text-sm">No orders yet.</td></tr>
-              ) : orders.map((o) => {
-                const diff = o.was_replaced ? replacementDiff(o) : [];
-                const productDiff = diff.find(d => d.type === 'product');
-                const colorDiff   = diff.find(d => d.type === 'color');
-                const sizeDiff    = diff.find(d => d.type === 'size');
-                return (
+              ) : orders.map((o) => (
                 <tr key={o.id} className={`hover:bg-zinc-900/30 transition-colors ${isInactive(o) ? "opacity-50" : ""}`}>
                   <td className="px-4 py-3 font-mono text-zinc-600 text-xs"><span className={isInactive(o) ? "line-through" : ""}>#M{o.id}</span></td>
                   <td className="px-4 py-3">
@@ -406,32 +395,33 @@ export default function OrdersPage() {
                     {o.customer_phone && <p className="text-zinc-500 text-xs mt-0.5">{o.customer_phone}</p>}
                   </td>
                   <td className="px-4 py-3">
-                    {productDiff ? (
-                      <>
-                        <p className="text-zinc-600 text-xs line-through">{productDiff.from}</p>
-                        <p className="text-sm text-white font-medium">{productDiff.to}</p>
-                      </>
-                    ) : (
-                      <p className="text-sm text-zinc-300">{o.product || "—"}</p>
+                    {o.was_replaced && (
+                      <p className="text-zinc-600 text-xs line-through mb-0.5">{o.replaced_product}</p>
                     )}
+                    <p className={`text-sm ${o.was_replaced ? "text-white font-medium" : "text-zinc-300"}`}>{o.product || "—"}</p>
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex flex-col gap-1">
-                      {colorDiff ? (
-                        <div className="flex items-center gap-1">
-                          <span className="text-[11px] bg-zinc-900 border border-zinc-800 px-2 py-0.5 rounded text-zinc-600 line-through">{colorDiff.from}</span>
-                          <span className="text-[11px] bg-zinc-900 border border-purple-500/30 px-2 py-0.5 rounded text-purple-300">{colorDiff.to}</span>
-                        </div>
-                      ) : o.color && (
-                        <span className="text-[11px] bg-zinc-900 border border-zinc-800 px-2 py-0.5 rounded text-zinc-400 w-fit">{o.color}</span>
-                      )}
-                      {sizeDiff ? (
-                        <div className="flex items-center gap-1">
-                          <span className="text-[11px] bg-zinc-900 border border-zinc-800 px-2 py-0.5 rounded text-zinc-600 line-through">{sizeDiff.from}</span>
-                          <span className="text-[11px] bg-zinc-900 border border-purple-500/30 px-2 py-0.5 rounded text-purple-300">{sizeDiff.to}</span>
-                        </div>
-                      ) : o.size && (
-                        <span className="text-[11px] bg-zinc-900 border border-zinc-800 px-2 py-0.5 rounded text-zinc-400 w-fit">{o.size}</span>
+                      {o.was_replaced ? (
+                        <>
+                          {o.replaced_color && (
+                            <span className="text-[11px] bg-zinc-900 border border-zinc-800 px-2 py-0.5 rounded text-zinc-600 line-through w-fit">{o.replaced_color}</span>
+                          )}
+                          {o.color && (
+                            <span className="text-[11px] bg-zinc-900 border border-purple-500/30 px-2 py-0.5 rounded text-purple-300 w-fit">{o.color}</span>
+                          )}
+                          {o.replaced_size && (
+                            <span className="text-[11px] bg-zinc-900 border border-zinc-800 px-2 py-0.5 rounded text-zinc-600 line-through w-fit">{o.replaced_size}</span>
+                          )}
+                          {o.size && (
+                            <span className="text-[11px] bg-zinc-900 border border-purple-500/30 px-2 py-0.5 rounded text-purple-300 w-fit">{o.size}</span>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          {o.color && <span className="text-[11px] bg-zinc-900 border border-zinc-800 px-2 py-0.5 rounded text-zinc-400 w-fit">{o.color}</span>}
+                          {o.size && <span className="text-[11px] bg-zinc-900 border border-zinc-800 px-2 py-0.5 rounded text-zinc-400 w-fit">{o.size}</span>}
+                        </>
                       )}
                     </div>
                   </td>
@@ -462,7 +452,7 @@ export default function OrdersPage() {
                     </div>
                   </td>
                 </tr>
-              )})}
+              ))}
             </tbody>
           </table>
         </div>

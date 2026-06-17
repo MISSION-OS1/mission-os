@@ -117,16 +117,9 @@ export default function CustomersPage() {
 
   const variantLabel = (o: OrderEntry) => [o.color, o.size].filter(Boolean).join(' · ');
 
-  const norm = (v?: string) => (v || '').trim().toLowerCase();
-
-  // يحسب بس اللي اتغير فعلاً (منتج / لون / مقاس) بدل ما يكرر اللي ما اتغيرش
-  const replacementDiff = (o: { product: string; color?: string; size?: string; replaced_product?: string; replaced_color?: string; replaced_size?: string }) => {
-    const parts: { label: string; from: string; to: string }[] = [];
-    if (o.replaced_product && norm(o.replaced_product) !== norm(o.product)) parts.push({ label: 'Product', from: o.replaced_product, to: o.product });
-    if (o.replaced_color && norm(o.replaced_color) !== norm(o.color))       parts.push({ label: 'Color', from: o.replaced_color, to: o.color || '' });
-    if (o.replaced_size && norm(o.replaced_size) !== norm(o.size))         parts.push({ label: 'Size', from: o.replaced_size, to: o.size || '' });
-    return parts;
-  };
+  // عرض المنتج القديم كامل (اسم + لون + مقاس) قدام المنتج الجديد كامل دايماً
+  const replacementLabel = (full: { product?: string; color?: string; size?: string }) =>
+    [full.product, full.color, full.size].filter(Boolean).join(' · ');
 
   return (
     <DashboardLayout>
@@ -171,16 +164,11 @@ export default function CustomersPage() {
                   {/* أحدث طلب */}
                   {customer.orders[0] && (
                     <div className="bg-zinc-900/40 border border-zinc-800/60 rounded-lg px-3 py-2 space-y-1">
-                      {customer.latestWasReplaced && replacementDiff({
-                        product: customer.orders[0].product, color: customer.orders[0].color, size: customer.orders[0].size,
-                        replaced_product: customer.latestReplacedProduct, replaced_color: customer.latestReplacedColor, replaced_size: customer.latestReplacedSize,
-                      }).map((d, i) => (
-                        <p key={i} className="text-[11px]">
-                          <span className="text-zinc-600 line-through">{d.from}</span>
-                          <span className="text-purple-400 mx-1">→</span>
-                          <span className="text-zinc-300">{d.to}</span>
+                      {customer.latestWasReplaced && (
+                        <p className="text-[11px] text-zinc-600 line-through">
+                          {replacementLabel({ product: customer.latestReplacedProduct, color: customer.latestReplacedColor, size: customer.latestReplacedSize })}
                         </p>
-                      ))}
+                      )}
                       <p className="text-xs text-zinc-300">{customer.orders[0].product}</p>
                       {variantLabel(customer.orders[0]) && (
                         <p className="text-[11px] text-zinc-500 mt-0.5">{variantLabel(customer.orders[0])} · ×{customer.orders[0].quantity}</p>
@@ -225,13 +213,11 @@ export default function CustomersPage() {
                               <span className={`px-2 py-0.5 rounded text-[10px] font-medium uppercase ${statusStyle(o.status)}`}>{o.status}</span>
                             </div>
                           </div>
-                          {o.was_replaced && replacementDiff(o).map((d, j) => (
-                            <p key={j} className="text-[11px]">
-                              <span className="text-zinc-600 line-through">{d.from}</span>
-                              <span className="text-purple-400 mx-1">→</span>
-                              <span className="text-zinc-300">{d.to}</span>
+                          {o.was_replaced && (
+                            <p className="text-[11px] text-zinc-600 line-through">
+                              {replacementLabel({ product: o.replaced_product, color: o.replaced_color, size: o.replaced_size })}
                             </p>
-                          ))}
+                          )}
                           <div className="flex items-center justify-between text-xs">
                             <span className="text-zinc-300">{o.product} {variantLabel(o) && <span className="text-zinc-500">({variantLabel(o)})</span>} ×{o.quantity}</span>
                             <span className="font-mono text-white">EGP {o.total_price?.toLocaleString()}</span>
@@ -277,16 +263,11 @@ export default function CustomersPage() {
                           <td className="p-4">
                             {customer.orders[0] && (
                               <div className="space-y-0.5">
-                                {customer.latestWasReplaced && replacementDiff({
-                                  product: customer.orders[0].product, color: customer.orders[0].color, size: customer.orders[0].size,
-                                  replaced_product: customer.latestReplacedProduct, replaced_color: customer.latestReplacedColor, replaced_size: customer.latestReplacedSize,
-                                }).map((d, i) => (
-                                  <p key={i} className="text-[11px]">
-                                    <span className="text-zinc-600 line-through">{d.from}</span>
-                                    <span className="text-purple-400 mx-1">→</span>
-                                    <span className="text-zinc-300">{d.to}</span>
+                                {customer.latestWasReplaced && (
+                                  <p className="text-[11px] text-zinc-600 line-through">
+                                    {replacementLabel({ product: customer.latestReplacedProduct, color: customer.latestReplacedColor, size: customer.latestReplacedSize })}
                                   </p>
-                                ))}
+                                )}
                                 <p className="text-xs text-zinc-300">{customer.orders[0].product}</p>
                                 {variantLabel(customer.orders[0]) && <p className="text-[11px] text-zinc-500">{variantLabel(customer.orders[0])} · ×{customer.orders[0].quantity}</p>}
                               </div>
@@ -329,13 +310,11 @@ export default function CustomersPage() {
                                         <span className={`px-2 py-0.5 rounded text-[10px] font-medium uppercase ${statusStyle(o.status)}`}>{o.status}</span>
                                       </div>
                                     </div>
-                                    {o.was_replaced && replacementDiff(o).map((d, j) => (
-                                      <p key={j} className="text-[11px]">
-                                        <span className="text-zinc-600 line-through">{d.from}</span>
-                                        <span className="text-purple-400 mx-1">→</span>
-                                        <span className="text-zinc-300">{d.to}</span>
+                                    {o.was_replaced && (
+                                      <p className="text-[11px] text-zinc-600 line-through">
+                                        {replacementLabel({ product: o.replaced_product, color: o.replaced_color, size: o.replaced_size })}
                                       </p>
-                                    ))}
+                                    )}
                                     <p className="text-xs text-zinc-300">{o.product} {variantLabel(o) && <span className="text-zinc-500">({variantLabel(o)})</span>} ×{o.quantity}</p>
                                   </div>
                                 ))}
