@@ -117,12 +117,14 @@ export default function CustomersPage() {
 
   const variantLabel = (o: OrderEntry) => [o.color, o.size].filter(Boolean).join(' · ');
 
+  const norm = (v?: string) => (v || '').trim().toLowerCase();
+
   // يحسب بس اللي اتغير فعلاً (منتج / لون / مقاس) بدل ما يكرر اللي ما اتغيرش
   const replacementDiff = (o: { product: string; color?: string; size?: string; replaced_product?: string; replaced_color?: string; replaced_size?: string }) => {
     const parts: { label: string; from: string; to: string }[] = [];
-    if (o.replaced_product && o.replaced_product !== o.product) parts.push({ label: 'Product', from: o.replaced_product, to: o.product });
-    if (o.replaced_color && o.replaced_color !== o.color) parts.push({ label: 'Color', from: o.replaced_color, to: o.color || '' });
-    if (o.replaced_size && o.replaced_size !== o.size) parts.push({ label: 'Size', from: o.replaced_size, to: o.size || '' });
+    if (o.replaced_product && norm(o.replaced_product) !== norm(o.product)) parts.push({ label: 'Product', from: o.replaced_product, to: o.product });
+    if (o.replaced_color && norm(o.replaced_color) !== norm(o.color))       parts.push({ label: 'Color', from: o.replaced_color, to: o.color || '' });
+    if (o.replaced_size && norm(o.replaced_size) !== norm(o.size))         parts.push({ label: 'Size', from: o.replaced_size, to: o.size || '' });
     return parts;
   };
 

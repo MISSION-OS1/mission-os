@@ -291,15 +291,13 @@ export default function OrdersPage() {
   const inputClass = "w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-zinc-600 transition-colors";
 
   // ✅ نص واضح يقول إيه اللي اتغير بالظبط (منتج، لون، مقاس)
-  const replacementDiff = (o: any) => {
-    const productChanged = o.replaced_product && o.replaced_product !== o.product;
-    const colorChanged    = o.replaced_color && o.replaced_color !== o.color;
-    const sizeChanged     = o.replaced_size && o.replaced_size !== o.size;
+  const norm = (v?: string) => (v || '').trim().toLowerCase();
 
-    const parts: { from: string; to: string }[] = [];
-    if (productChanged) parts.push({ from: o.replaced_product, to: o.product });
-    if (colorChanged)   parts.push({ from: o.replaced_color, to: o.color });
-    if (sizeChanged)    parts.push({ from: o.replaced_size, to: o.size });
+  const replacementDiff = (o: any) => {
+    const parts: { type: 'product' | 'color' | 'size'; from: string; to: string }[] = [];
+    if (o.replaced_product && norm(o.replaced_product) !== norm(o.product)) parts.push({ type: 'product', from: o.replaced_product, to: o.product });
+    if (o.replaced_color && norm(o.replaced_color) !== norm(o.color))       parts.push({ type: 'color', from: o.replaced_color, to: o.color });
+    if (o.replaced_size && norm(o.replaced_size) !== norm(o.size))         parts.push({ type: 'size', from: o.replaced_size, to: o.size });
     return parts;
   };
 
@@ -397,9 +395,9 @@ export default function OrdersPage() {
                 <tr><td colSpan={12} className="text-center text-zinc-600 py-16 text-sm">No orders yet.</td></tr>
               ) : orders.map((o) => {
                 const diff = o.was_replaced ? replacementDiff(o) : [];
-                const productDiff = diff.find(d => d.from === o.replaced_product);
-                const colorDiff   = diff.find(d => d.from === o.replaced_color);
-                const sizeDiff    = diff.find(d => d.from === o.replaced_size);
+                const productDiff = diff.find(d => d.type === 'product');
+                const colorDiff   = diff.find(d => d.type === 'color');
+                const sizeDiff    = diff.find(d => d.type === 'size');
                 return (
                 <tr key={o.id} className={`hover:bg-zinc-900/30 transition-colors ${isInactive(o) ? "opacity-50" : ""}`}>
                   <td className="px-4 py-3 font-mono text-zinc-600 text-xs"><span className={isInactive(o) ? "line-through" : ""}>#M{o.id}</span></td>
