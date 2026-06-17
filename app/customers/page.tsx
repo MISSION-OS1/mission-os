@@ -14,6 +14,9 @@ interface OrderEntry {
   size: string;
   quantity: number;
   was_replaced: boolean;
+  replaced_product?: string;
+  replaced_color?: string;
+  replaced_size?: string;
 }
 
 interface CustomerSummary {
@@ -25,6 +28,9 @@ interface CustomerSummary {
   lastOrderDate: string;
   latestStatus: string;
   latestWasReplaced: boolean;
+  latestReplacedProduct?: string;
+  latestReplacedColor?: string;
+  latestReplacedSize?: string;
   orders: OrderEntry[];
 }
 
@@ -48,7 +54,7 @@ export default function CustomersPage() {
       setLoading(true);
       const { data: ordersData } = await supabase
         .from('orders')
-        .select('customer_name, customer_phone, payment_method, total_price, created_at, status, product, color, size, quantity, was_replaced')
+        .select('customer_name, customer_phone, payment_method, total_price, created_at, status, product, color, size, quantity, was_replaced, replaced_product, replaced_color, replaced_size')
         .order('created_at', { ascending: false });
 
       if (ordersData) {
@@ -68,6 +74,9 @@ export default function CustomersPage() {
             status, total_price: price, created_at: date, payment_method: paymentMethod,
             product: order.product || '', color: order.color || '', size: order.size || '',
             quantity: order.quantity || 1, was_replaced: wasReplaced,
+            replaced_product: order.replaced_product || undefined,
+            replaced_color: order.replaced_color || undefined,
+            replaced_size: order.replaced_size || undefined,
           };
 
           if (customerMap[name]) {
@@ -78,6 +87,9 @@ export default function CustomersPage() {
               customerMap[name].lastOrderDate = date;
               customerMap[name].latestStatus = status;
               customerMap[name].latestWasReplaced = wasReplaced;
+              customerMap[name].latestReplacedProduct = entry.replaced_product;
+              customerMap[name].latestReplacedColor = entry.replaced_color;
+              customerMap[name].latestReplacedSize = entry.replaced_size;
               customerMap[name].paymentMethod = paymentMethod;
               customerMap[name].phone = phone;
             }
@@ -85,6 +97,9 @@ export default function CustomersPage() {
             customerMap[name] = {
               name, phone, paymentMethod, totalOrders: 1, totalSpent: price,
               lastOrderDate: date, latestStatus: status, latestWasReplaced: wasReplaced,
+              latestReplacedProduct: entry.replaced_product,
+              latestReplacedColor: entry.replaced_color,
+              latestReplacedSize: entry.replaced_size,
               orders: [entry],
             };
           }
@@ -101,6 +116,15 @@ export default function CustomersPage() {
   );
 
   const variantLabel = (o: OrderEntry) => [o.color, o.size].filter(Boolean).join(' · ');
+
+  // يحسب بس اللي اتغير فعلاً (منتج / لون / مقاس) بدل ما يكرر اللي ما اتغيرش
+  const replacementDiff = (o: { product: string; color?: string; size?: string; replaced_product?: string; replaced_color?: string; replaced_size?: string }) => {
+    const parts: { label: string; from: string; to: string }[] = [];
+    if (o.replaced_product && o.replaced_product !== o.product) parts.push({ label: 'Product', from: o.replaced_product, to: o.product });
+    if (o.replaced_color && o.replaced_color !== o.color) parts.push({ label: 'Color', from: o.replaced_color, to: o.color || '' });
+    if (o.replaced_size && o.replaced_size !== o.size) parts.push({ label: 'Size', from: o.replaced_size, to: o.size || '' });
+    return parts;
+  };
 
   return (
     <DashboardLayout>
@@ -144,7 +168,17 @@ export default function CustomersPage() {
 
                   {/* أحدث طلب */}
                   {customer.orders[0] && (
-                    <div className="bg-zinc-900/40 border border-zinc-800/60 rounded-lg px-3 py-2">
+                    <div className="bg-zinc-900/40 border border-zinc-800/60 rounded-lg px-3 py-2 space-y-1">
+                      {customer.latestWasReplaced && replacementDiff({
+                        product: customer.orders[0].product, color: customer.orders[0].color, size: customer.orders[0].size,
+                        replaced_product: customer.latestReplacedProduct, replaced_color: customer.latestReplacedColor, replaced_size: customer.latestReplacedSize,
+                      }).map((d, i) => (
+                        <p key={i} className="text-[11px]">
+                          <span className="text-zinc-600 line-through">{d.from}</span>
+                          <span className="text-purple-400 mx-1">→</span>
+                          <span className="text-zinc-300">{d.to}</span>
+                        </p>
+                      ))}
                       <p className="text-xs text-zinc-300">{customer.orders[0].product}</p>
                       {variantLabel(customer.orders[0]) && (
                         <p className="text-[11px] text-zinc-500 mt-0.5">{variantLabel(customer.orders[0])} · ×{customer.orders[0].quantity}</p>
@@ -189,6 +223,13 @@ export default function CustomersPage() {
                               <span className={`px-2 py-0.5 rounded text-[10px] font-medium uppercase ${statusStyle(o.status)}`}>{o.status}</span>
                             </div>
                           </div>
+                          {o.was_replaced && replacementDiff(o).map((d, j) => (
+                            <p key={j} className="text-[11px]">
+                              <span className="text-zinc-600 line-through">{d.from}</span>
+                              <span className="text-purple-400 mx-1">→</span>
+                              <span className="text-zinc-300">{d.to}</span>
+                            </p>
+                          ))}
                           <div className="flex items-center justify-between text-xs">
                             <span className="text-zinc-300">{o.product} {variantLabel(o) && <span className="text-zinc-500">({variantLabel(o)})</span>} ×{o.quantity}</span>
                             <span className="font-mono text-white">EGP {o.total_price?.toLocaleString()}</span>
@@ -233,7 +274,17 @@ export default function CustomersPage() {
                           </td>
                           <td className="p-4">
                             {customer.orders[0] && (
-                              <div>
+                              <div className="space-y-0.5">
+                                {customer.latestWasReplaced && replacementDiff({
+                                  product: customer.orders[0].product, color: customer.orders[0].color, size: customer.orders[0].size,
+                                  replaced_product: customer.latestReplacedProduct, replaced_color: customer.latestReplacedColor, replaced_size: customer.latestReplacedSize,
+                                }).map((d, i) => (
+                                  <p key={i} className="text-[11px]">
+                                    <span className="text-zinc-600 line-through">{d.from}</span>
+                                    <span className="text-purple-400 mx-1">→</span>
+                                    <span className="text-zinc-300">{d.to}</span>
+                                  </p>
+                                ))}
                                 <p className="text-xs text-zinc-300">{customer.orders[0].product}</p>
                                 {variantLabel(customer.orders[0]) && <p className="text-[11px] text-zinc-500">{variantLabel(customer.orders[0])} · ×{customer.orders[0].quantity}</p>}
                               </div>
@@ -266,15 +317,24 @@ export default function CustomersPage() {
                               <div className="space-y-2">
                                 <p className="text-[11px] text-zinc-500 uppercase tracking-wider font-semibold mb-3">Order History</p>
                                 {customer.orders.map((o, i) => (
-                                  <div key={i} className="flex items-center justify-between text-xs bg-zinc-900/60 border border-zinc-800/60 rounded-lg px-4 py-2.5">
-                                    <span className="text-zinc-500 font-mono w-24">{o.created_at}</span>
-                                    <span className="text-zinc-300 flex-1">{o.product} {variantLabel(o) && <span className="text-zinc-500">({variantLabel(o)})</span>} ×{o.quantity}</span>
-                                    <span className="text-zinc-400 capitalize w-32">{o.payment_method}</span>
-                                    <span className="font-mono text-white w-24 text-right">EGP {o.total_price?.toLocaleString()}</span>
-                                    <div className="flex items-center gap-1.5 w-44 justify-end">
-                                      {o.was_replaced && <span className={replacedBadge}>Replaced</span>}
-                                      <span className={`px-2 py-0.5 rounded text-[10px] font-medium uppercase ${statusStyle(o.status)}`}>{o.status}</span>
+                                  <div key={i} className="bg-zinc-900/60 border border-zinc-800/60 rounded-lg px-4 py-2.5 space-y-1">
+                                    <div className="flex items-center justify-between text-xs">
+                                      <span className="text-zinc-500 font-mono">{o.created_at}</span>
+                                      <span className="text-zinc-400 capitalize">{o.payment_method}</span>
+                                      <span className="font-mono text-white">EGP {o.total_price?.toLocaleString()}</span>
+                                      <div className="flex items-center gap-1.5">
+                                        {o.was_replaced && <span className={replacedBadge}>Replaced</span>}
+                                        <span className={`px-2 py-0.5 rounded text-[10px] font-medium uppercase ${statusStyle(o.status)}`}>{o.status}</span>
+                                      </div>
                                     </div>
+                                    {o.was_replaced && replacementDiff(o).map((d, j) => (
+                                      <p key={j} className="text-[11px]">
+                                        <span className="text-zinc-600 line-through">{d.from}</span>
+                                        <span className="text-purple-400 mx-1">→</span>
+                                        <span className="text-zinc-300">{d.to}</span>
+                                      </p>
+                                    ))}
+                                    <p className="text-xs text-zinc-300">{o.product} {variantLabel(o) && <span className="text-zinc-500">({variantLabel(o)})</span>} ×{o.quantity}</p>
                                   </div>
                                 ))}
                               </div>
