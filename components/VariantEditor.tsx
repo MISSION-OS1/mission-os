@@ -61,23 +61,23 @@ export default function VariantEditor({ variants, onChange }: Props) {
         </button>
       </div>
 
-      {/* جدول الـ variants */}
+      {/* جدول الـ variants — scroll أفقي على الموبايل */}
       {colors.length > 0 && (
-        <div className="border border-zinc-800 rounded-lg overflow-hidden">
-          <table className="w-full text-xs">
+        <div className="border border-zinc-800 rounded-lg overflow-x-auto overflow-y-hidden -mx-1 px-1">
+          <table className="text-xs min-w-[560px] w-full">
             <thead className="bg-zinc-900 border-b border-zinc-800">
               <tr>
-                <th className="px-3 py-2 text-left text-zinc-500 uppercase tracking-wider">Color</th>
+                <th className="px-3 py-2 text-left text-zinc-500 uppercase tracking-wider sticky left-0 bg-zinc-900 z-10">Color</th>
                 {SIZES.map(s => (
-                  <th key={s} className="px-2 py-2 text-center text-zinc-500 uppercase tracking-wider">{s}</th>
+                  <th key={s} className="px-2 py-2 text-center text-zinc-500 uppercase tracking-wider whitespace-nowrap">{s}</th>
                 ))}
-                <th className="px-2 py-2"></th>
+                <th className="px-2 py-2 w-8"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-800/60">
               {colors.map(color => (
                 <tr key={color} className="hover:bg-zinc-900/30">
-                  <td className="px-3 py-2 font-medium text-white">{color}</td>
+                  <td className="px-3 py-2 font-medium text-white sticky left-0 bg-zinc-950 z-10 whitespace-nowrap">{color}</td>
                   {SIZES.map(size => {
                     const variant = variants.find(v => v.color === color && v.size === size);
                     return (
@@ -87,7 +87,7 @@ export default function VariantEditor({ variants, onChange }: Props) {
                           min="0"
                           value={variant?.stock ?? 0}
                           onChange={(e) => updateStock(color, size, parseInt(e.target.value) || 0)}
-                          className="w-12 bg-zinc-900 border border-zinc-800 rounded px-1 py-1 text-center text-white text-xs focus:outline-none focus:border-zinc-600"
+                          className="w-14 bg-zinc-900 border border-zinc-800 rounded px-1 py-1.5 text-center text-white text-xs focus:outline-none focus:border-zinc-600"
                         />
                       </td>
                     );
@@ -106,6 +106,9 @@ export default function VariantEditor({ variants, onChange }: Props) {
             </tbody>
           </table>
         </div>
+      )}
+      {colors.length > 0 && (
+        <p className="text-[10px] text-zinc-600 sm:hidden">← Swipe sideways to see all sizes</p>
       )}
     </div>
   );

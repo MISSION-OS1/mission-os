@@ -162,23 +162,23 @@ export default function DashboardOverview() {
                     <div className="text-center text-xs text-zinc-600 py-10">No recent orders.</div>
                   ) : (
                     recentOrders.map((order) => (
-                      <div key={order.id} className={`flex justify-between items-center text-xs ${isCanceled(order) ? 'opacity-40' : ''}`}>
-                        <div className="flex items-center space-x-3 min-w-0">
-                          <span className="font-mono text-zinc-600 shrink-0">#M{order.id}</span>
-                          <div className="min-w-0">
+                      <div key={order.id} className={`text-xs space-y-1.5 ${isCanceled(order) ? 'opacity-40' : ''} pb-3 last:pb-0 border-b border-zinc-900 last:border-0`}>
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="font-mono text-zinc-600 shrink-0">#M{order.id}</span>
                             <p className={`font-medium text-zinc-300 truncate ${isCanceled(order) ? 'line-through' : ''}`}>{order.customer_name}</p>
-                            <p className="text-[10px] text-zinc-500 truncate">{orderLabel(order)}</p>
                           </div>
-                        </div>
-                        <div className="flex items-center space-x-3 shrink-0">
-                          <span className="text-zinc-400 font-medium">EGP {order.total_price}</span>
-                          <span className={`px-2 py-0.5 rounded text-[10px] font-medium uppercase ${
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-medium uppercase shrink-0 ${
                             order.status?.toLowerCase() === 'delivered' ? 'text-green-400 bg-green-500/5' :
                             order.status?.toLowerCase() === 'canceled'  ? 'text-red-400 bg-red-500/5' :
                             order.status?.toLowerCase() === 'replacing' ? 'text-orange-400 bg-orange-500/5' :
                             order.status?.toLowerCase() === 'shipped'   ? 'text-blue-400 bg-blue-500/5' :
                                                                           'text-yellow-500 bg-yellow-500/5'
                           }`}>{order.status}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2 pl-7">
+                          <p className="text-[10px] text-zinc-500 truncate min-w-0">{orderLabel(order)}</p>
+                          <span className="text-zinc-400 font-medium shrink-0">EGP {order.total_price}</span>
                         </div>
                       </div>
                     ))
