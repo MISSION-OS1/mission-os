@@ -13,6 +13,7 @@ interface OrderEntry {
   color: string;
   size: string;
   quantity: number;
+  was_replaced: boolean;
 }
 
 interface CustomerSummary {
@@ -23,6 +24,7 @@ interface CustomerSummary {
   totalSpent: number;
   lastOrderDate: string;
   latestStatus: string;
+  latestWasReplaced: boolean;
   orders: OrderEntry[];
 }
 
@@ -31,8 +33,9 @@ const statusStyle = (s: string) => ({
   shipped:   'bg-blue-500/10 text-blue-400 border border-blue-500/20',
   pending:   'bg-yellow-500/10 text-yellow-400 border border-yellow-500/20',
   canceled:  'bg-red-500/10 text-red-400 border border-red-500/20',
-  replacing: 'bg-orange-500/10 text-orange-400 border border-orange-500/20',
 }[s?.toLowerCase()] || 'bg-zinc-800 text-zinc-400');
+
+const replacedBadge = "px-2 py-0.5 rounded-md text-[10px] font-medium uppercase tracking-wide bg-purple-500/10 text-purple-400 border border-purple-500/20";
 
 export default function CustomersPage() {
   const [customers, setCustomers] = useState<CustomerSummary[]>([]);
@@ -45,7 +48,7 @@ export default function CustomersPage() {
       setLoading(true);
       const { data: ordersData } = await supabase
         .from('orders')
-        .select('customer_name, customer_phone, payment_method, total_price, created_at, status, product, color, size, quantity')
+        .select('customer_name, customer_phone, payment_method, total_price, created_at, status, product, color, size, quantity, was_replaced')
         .order('created_at', { ascending: false });
 
       if (ordersData) {
@@ -57,13 +60,14 @@ export default function CustomersPage() {
           const paymentMethod = order.payment_method || 'Cash';
           const price = order.total_price || 0;
           const status = order.status || 'pending';
+          const wasReplaced = !!order.was_replaced;
           const date = order.created_at
             ? new Date(order.created_at).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
             : 'N/A';
           const entry: OrderEntry = {
             status, total_price: price, created_at: date, payment_method: paymentMethod,
             product: order.product || '', color: order.color || '', size: order.size || '',
-            quantity: order.quantity || 1,
+            quantity: order.quantity || 1, was_replaced: wasReplaced,
           };
 
           if (customerMap[name]) {
@@ -73,11 +77,16 @@ export default function CustomersPage() {
             if (order.created_at && new Date(order.created_at) > new Date(customerMap[name].lastOrderDate)) {
               customerMap[name].lastOrderDate = date;
               customerMap[name].latestStatus = status;
+              customerMap[name].latestWasReplaced = wasReplaced;
               customerMap[name].paymentMethod = paymentMethod;
               customerMap[name].phone = phone;
             }
           } else {
-            customerMap[name] = { name, phone, paymentMethod, totalOrders: 1, totalSpent: price, lastOrderDate: date, latestStatus: status, orders: [entry] };
+            customerMap[name] = {
+              name, phone, paymentMethod, totalOrders: 1, totalSpent: price,
+              lastOrderDate: date, latestStatus: status, latestWasReplaced: wasReplaced,
+              orders: [entry],
+            };
           }
         });
         setCustomers(Object.values(customerMap).sort((a, b) => b.totalSpent - a.totalSpent));
@@ -127,7 +136,10 @@ export default function CustomersPage() {
                         <p className="text-xs text-zinc-500 font-mono">{customer.phone}</p>
                       </div>
                     </div>
-                    <span className={`px-2 py-1 rounded-md text-[11px] font-medium uppercase tracking-wide ${statusStyle(customer.latestStatus)}`}>{customer.latestStatus}</span>
+                    <div className="flex items-center gap-1.5">
+                      {customer.latestWasReplaced && <span className={replacedBadge}>Replaced</span>}
+                      <span className={`px-2 py-1 rounded-md text-[11px] font-medium uppercase tracking-wide ${statusStyle(customer.latestStatus)}`}>{customer.latestStatus}</span>
+                    </div>
                   </div>
 
                   {/* أحدث طلب */}
@@ -172,7 +184,10 @@ export default function CustomersPage() {
                         <div key={i} className="bg-zinc-900/60 border border-zinc-800/60 rounded-lg px-3 py-2 space-y-1">
                           <div className="flex items-center justify-between text-xs">
                             <span className="text-zinc-500">{o.created_at}</span>
-                            <span className={`px-2 py-0.5 rounded text-[10px] font-medium uppercase ${statusStyle(o.status)}`}>{o.status}</span>
+                            <div className="flex items-center gap-1.5">
+                              {o.was_replaced && <span className={replacedBadge}>Replaced</span>}
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-medium uppercase ${statusStyle(o.status)}`}>{o.status}</span>
+                            </div>
                           </div>
                           <div className="flex items-center justify-between text-xs">
                             <span className="text-zinc-300">{o.product} {variantLabel(o) && <span className="text-zinc-500">({variantLabel(o)})</span>} ×{o.quantity}</span>
@@ -226,7 +241,10 @@ export default function CustomersPage() {
                           </td>
                           <td className="p-4 text-center font-mono text-zinc-300">{customer.totalOrders}</td>
                           <td className="p-4 text-center">
-                            <span className={`px-2 py-1 rounded-md text-[11px] font-medium uppercase tracking-wide ${statusStyle(customer.latestStatus)}`}>{customer.latestStatus}</span>
+                            <div className="flex items-center justify-center gap-1.5">
+                              {customer.latestWasReplaced && <span className={replacedBadge}>Replaced</span>}
+                              <span className={`px-2 py-1 rounded-md text-[11px] font-medium uppercase tracking-wide ${statusStyle(customer.latestStatus)}`}>{customer.latestStatus}</span>
+                            </div>
                           </td>
                           <td className="p-4 text-center">
                             <span className="bg-zinc-950 border border-zinc-800 px-2 py-0.5 rounded text-xs capitalize text-zinc-400">{customer.paymentMethod}</span>
@@ -244,7 +262,7 @@ export default function CustomersPage() {
                         </tr>
                         {expandedCustomer === customer.name && (
                           <tr className="border-b border-zinc-900 bg-zinc-950/60">
-                            <td colSpan={8} className="px-6 py-4">
+                            <td colSpan={7} className="px-6 py-4">
                               <div className="space-y-2">
                                 <p className="text-[11px] text-zinc-500 uppercase tracking-wider font-semibold mb-3">Order History</p>
                                 {customer.orders.map((o, i) => (
@@ -253,7 +271,10 @@ export default function CustomersPage() {
                                     <span className="text-zinc-300 flex-1">{o.product} {variantLabel(o) && <span className="text-zinc-500">({variantLabel(o)})</span>} ×{o.quantity}</span>
                                     <span className="text-zinc-400 capitalize w-32">{o.payment_method}</span>
                                     <span className="font-mono text-white w-24 text-right">EGP {o.total_price?.toLocaleString()}</span>
-                                    <span className={`px-2 py-0.5 rounded text-[10px] font-medium uppercase ${statusStyle(o.status)}`}>{o.status}</span>
+                                    <div className="flex items-center gap-1.5 w-44 justify-end">
+                                      {o.was_replaced && <span className={replacedBadge}>Replaced</span>}
+                                      <span className={`px-2 py-0.5 rounded text-[10px] font-medium uppercase ${statusStyle(o.status)}`}>{o.status}</span>
+                                    </div>
                                   </div>
                                 ))}
                               </div>
