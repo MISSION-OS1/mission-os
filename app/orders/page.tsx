@@ -1,8 +1,9 @@
 'use client';
 
-import { useState, useEffect, FormEvent } from "react";
+import { useState, useEffect, FormEvent, useRef } from "react";
 import { supabase } from '@/lib/supabase';
 import DashboardLayout from '@/components/DashboardLayout';
+import Papa from 'papaparse';
 
 const SIZES = ['One Size', 'S', 'M', 'L', 'XL', 'XXL'];
 
@@ -23,6 +24,21 @@ interface Product {
   variants?: Variant[];
 }
 
+interface CsvRow {
+  customer_name: string;
+  customer_phone: string;
+  product_name: string;
+  color: string;
+  quantity: number;
+  total_price: number;
+  shipping_price: number;
+  created_at: string;
+  // matching result
+  matched_product?: Product;
+  matched_variant?: Variant;
+  matchStatus: 'matched' | 'product_not_found' | 'variant_not_found';
+}
+
 export default function OrdersPage() {
   const [orders, setOrders] = useState<any[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
@@ -40,9 +56,17 @@ export default function OrdersPage() {
   const [cancelingOrder, setCancelingOrder] = useState<any | null>(null);
   const [flyerCostInput, setFlyerCostInput] = useState("5");
 
+  // ===== CSV Import State =====
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [csvRows, setCsvRows] = useState<CsvRow[]>([]);
+  const [isCsvPreviewOpen, setIsCsvPreviewOpen] = useState(false);
+  const [csvPlatform, setCsvPlatform] = useState("shopify");
+  const [csvPayment, setCsvPayment] = useState("cash on delivery");
+  const [isImporting, setIsImporting] = useState(false);
+  const [importSummary, setImportSummary] = useState<{ imported: number; skipped: number } | null>(null);
+
   const platforms = ["shopify", "tiktok", "facebook", "instagram", "WhatsApp", "other"];
   const payments  = ["cash on delivery", "instapay", "credit card", "mylerz", "Abanoub", "Youssef", "Mina"];
-  // ✅ status حقيقي بس — "replacing" مش status تاني، هو flag مستقل
   const statuses  = ["pending", "shipped", "delivered", "canceled"];
 
   const emptyForm = {
@@ -254,7 +278,6 @@ export default function OrdersPage() {
     const newTotal  = replacingProduct.price * qty;
     const newProfit = newTotal - (parseFloat(replacingOrder.shipping_price) || 0);
 
-    // ✅ الـ status يفضل/يرجع زي ما كان (أو pending لو كان canceled)، والـ flag was_replaced بيتفعل
     const keepStatus = isInactiveStatus(replacingOrder.status) ? "pending" : replacingOrder.status;
 
     await supabase.from("orders").update({
@@ -278,6 +301,112 @@ export default function OrdersPage() {
     fetchData();
   };
 
+  // ===== CSV Import =====
+  // اسم المنتج في Shopify بيبقى "Product Name - Color"، نفصل الاسم عن اللون
+  const splitProductColor = (itemName: string) => {
+    const parts = itemName.split(' - ');
+    if (parts.length >= 2) {
+      const color = parts[parts.length - 1].trim();
+      const name = parts.slice(0, -1).join(' - ').trim();
+      return { name, color };
+    }
+    return { name: itemName.trim(), color: '' };
+  };
+
+  const matchCsvRow = (productName: string, color: string): { product?: Product; variant?: Variant; status: CsvRow['matchStatus'] } => {
+    const product = products.find(p => p.name.trim().toLowerCase() === productName.trim().toLowerCase());
+    if (!product) return { status: 'product_not_found' };
+    const variant = product.variants?.find(v => v.color.trim().toLowerCase() === color.trim().toLowerCase());
+    if (!variant) return { product, status: 'variant_not_found' };
+    return { product, variant, status: 'matched' };
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+      complete: (results: any) => {
+        const rows: CsvRow[] = results.data.map((row: any) => {
+          const itemName = row['Item Name'] || '';
+          const { name, color } = splitProductColor(itemName);
+          const match = matchCsvRow(name, color);
+
+          return {
+            customer_name: row['Billing Name'] || row['Shipping Name'] || row['Name'] || 'Unknown',
+            customer_phone: row['Billing Phone'] || row['Shipping Phone'] || '',
+            product_name: name,
+            color,
+            quantity: parseInt(row['Item Quantity']) || 1,
+            total_price: parseFloat(row['Item Total Price']) || 0,
+            shipping_price: parseFloat(row['Shipping']) || 0,
+            created_at: row['Created At'] || '',
+            matched_product: match.product,
+            matched_variant: match.variant,
+            matchStatus: match.status,
+          };
+        }).filter((r: CsvRow) => r.product_name); // skip totally empty rows
+
+        setCsvRows(rows);
+        setIsCsvPreviewOpen(true);
+        setImportSummary(null);
+      },
+    });
+
+    // reset input so the same file can be re-selected later
+    e.target.value = '';
+  };
+
+  const confirmCsvImport = async () => {
+    setIsImporting(true);
+    let imported = 0;
+    let skipped = 0;
+
+    for (const row of csvRows) {
+      if (row.matchStatus !== 'matched' || !row.matched_product || !row.matched_variant) {
+        skipped++;
+        continue;
+      }
+
+      const netProfit = row.total_price - row.shipping_price;
+      const payload = {
+        customer_name: row.customer_name,
+        customer_phone: row.customer_phone,
+        product_id: row.matched_product.id,
+        product: row.matched_product.name,
+        variant_id: row.matched_variant.id,
+        color: row.matched_variant.color,
+        size: row.matched_variant.size,
+        quantity: row.quantity,
+        platform: csvPlatform,
+        payment_method: csvPayment,
+        total_price: row.total_price,
+        shipping_price: row.shipping_price,
+        net_profit: netProfit,
+        status: "pending",
+      };
+
+      await supabase.from("orders").insert([payload]);
+      await adjustVariantStock(row.matched_variant.id, -row.quantity);
+      const { data: prod } = await supabase.from("products").select("sales_count").eq("id", row.matched_product.id).single();
+      await supabase.from("products").update({ sales_count: (prod?.sales_count || 0) + 1 }).eq("id", row.matched_product.id);
+
+      imported++;
+    }
+
+    setImportSummary({ imported, skipped });
+    setIsImporting(false);
+    fetchData();
+  };
+
+  const closeCsvModal = () => {
+    setIsCsvPreviewOpen(false);
+    setCsvRows([]);
+    setImportSummary(null);
+  };
+
   const statusStyle = (s: string) => ({
     delivered: "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20",
     shipped:   "bg-blue-500/10 text-blue-400 border border-blue-500/20",
@@ -290,23 +419,30 @@ export default function OrdersPage() {
 
   const inputClass = "w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-zinc-600 transition-colors";
 
-  // ✅ نص واضح يقول إيه اللي اتغير بالظبط (منتج، لون، مقاس)
-  // المنتج القديم كامل (اسم + لون + مقاس) قدام المنتج الجديد كامل، حتى لو بعض الحقول متطابقة
   const replacementLabel = (full: { product?: string; color?: string; size?: string }) =>
     [full.product, full.color, full.size].filter(Boolean).join(' · ');
+
+  const matchedCount = csvRows.filter(r => r.matchStatus === 'matched').length;
+  const skippedCount = csvRows.length - matchedCount;
 
   return (
     <DashboardLayout>
       <div className="space-y-6 text-white">
 
-        <div className="flex justify-between items-center">
+        <div className="flex justify-between items-center flex-wrap gap-3">
           <div>
             <h1 className="text-3xl font-bold tracking-tight">Orders</h1>
             <p className="text-zinc-500 text-sm mt-0.5">
               {orders.length} total · {orders.filter(o => o.status?.toLowerCase() === "canceled").length} canceled · {orders.filter(o => o.was_replaced).length} replaced
             </p>
           </div>
-          <button onClick={openNew} className="bg-white text-black px-4 py-2.5 rounded-lg font-bold text-sm hover:bg-zinc-200 transition-colors whitespace-nowrap">+ New Order</button>
+          <div className="flex gap-2">
+            <input ref={fileInputRef} type="file" accept=".csv" onChange={handleFileSelect} className="hidden" />
+            <button onClick={() => fileInputRef.current?.click()} className="bg-zinc-900 border border-zinc-800 text-zinc-300 px-4 py-2.5 rounded-lg font-bold text-sm hover:bg-zinc-800 transition-colors whitespace-nowrap">
+              ⬆ Upload CSV
+            </button>
+            <button onClick={openNew} className="bg-white text-black px-4 py-2.5 rounded-lg font-bold text-sm hover:bg-zinc-200 transition-colors whitespace-nowrap">+ New Order</button>
+          </div>
         </div>
 
         {/* Mobile Cards */}
@@ -456,6 +592,97 @@ export default function OrdersPage() {
             </tbody>
           </table>
         </div>
+
+        {/* ===== CSV Import Preview Modal ===== */}
+        {isCsvPreviewOpen && (
+          <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
+            <div className="bg-zinc-950 border border-zinc-800 rounded-xl w-full max-w-4xl overflow-hidden flex flex-col max-h-[90vh]">
+              <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-800">
+                <div>
+                  <h2 className="text-base font-bold text-white">Import Orders from CSV</h2>
+                  {!importSummary && (
+                    <p className="text-xs text-zinc-500 mt-0.5">{matchedCount} matched · {skippedCount} will be skipped</p>
+                  )}
+                </div>
+                <button onClick={closeCsvModal} className="text-zinc-500 hover:text-white text-xl leading-none">✕</button>
+              </div>
+
+              {importSummary ? (
+                <div className="p-8 text-center space-y-4">
+                  <div className="text-4xl">✅</div>
+                  <h3 className="text-lg font-bold text-white">Import Complete</h3>
+                  <p className="text-sm text-zinc-400">
+                    <span className="text-emerald-400 font-bold">{importSummary.imported}</span> orders imported successfully
+                    {importSummary.skipped > 0 && (
+                      <> · <span className="text-red-400 font-bold">{importSummary.skipped}</span> skipped (product not found)</>
+                    )}
+                  </p>
+                  <button onClick={closeCsvModal} className="px-6 py-2.5 bg-white text-black rounded-lg text-sm font-bold hover:bg-zinc-200 transition-colors">
+                    Done
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <div className="px-6 py-4 border-b border-zinc-800 flex flex-wrap gap-4">
+                    <div className="flex-1 min-w-[140px]">
+                      <label className="text-[11px] text-zinc-500 uppercase tracking-wider mb-1 block">Platform for all rows</label>
+                      <select className={inputClass} value={csvPlatform} onChange={(e) => setCsvPlatform(e.target.value)}>
+                        {platforms.map(p => <option key={p} value={p} className="bg-zinc-900 capitalize">{p}</option>)}
+                      </select>
+                    </div>
+                    <div className="flex-1 min-w-[140px]">
+                      <label className="text-[11px] text-zinc-500 uppercase tracking-wider mb-1 block">Payment for all rows</label>
+                      <select className={inputClass} value={csvPayment} onChange={(e) => setCsvPayment(e.target.value)}>
+                        {payments.map(p => <option key={p} value={p} className="bg-zinc-900 capitalize">{p}</option>)}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="overflow-y-auto flex-1">
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-zinc-900 border-b border-zinc-800 text-zinc-500 uppercase tracking-wider sticky top-0">
+                        <tr>
+                          <th className="px-4 py-2.5">Customer</th>
+                          <th className="px-4 py-2.5">Product</th>
+                          <th className="px-4 py-2.5">Color</th>
+                          <th className="px-4 py-2.5 text-center">Qty</th>
+                          <th className="px-4 py-2.5 text-right">Total</th>
+                          <th className="px-4 py-2.5 text-right">Shipping</th>
+                          <th className="px-4 py-2.5 text-center">Match</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-zinc-800/60">
+                        {csvRows.map((row, i) => (
+                          <tr key={i} className={row.matchStatus !== 'matched' ? 'opacity-50' : ''}>
+                            <td className="px-4 py-2.5 text-zinc-300">{row.customer_name}</td>
+                            <td className="px-4 py-2.5 text-zinc-300">{row.product_name}</td>
+                            <td className="px-4 py-2.5 text-zinc-400">{row.color || '—'}</td>
+                            <td className="px-4 py-2.5 text-center font-mono text-zinc-400">{row.quantity}</td>
+                            <td className="px-4 py-2.5 text-right font-mono text-white">{row.total_price.toLocaleString()}</td>
+                            <td className="px-4 py-2.5 text-right font-mono text-blue-400">{row.shipping_price.toLocaleString()}</td>
+                            <td className="px-4 py-2.5 text-center">
+                              {row.matchStatus === 'matched' && <span className="text-emerald-400">✓ Matched</span>}
+                              {row.matchStatus === 'product_not_found' && <span className="text-red-400">⚠ Product not found</span>}
+                              {row.matchStatus === 'variant_not_found' && <span className="text-yellow-400">⚠ Color not found</span>}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div className="flex gap-3 px-6 py-4 border-t border-zinc-800">
+                    <button onClick={closeCsvModal} className="flex-1 py-2.5 bg-zinc-900 hover:bg-zinc-800 text-white rounded-lg text-sm font-medium transition-colors">Cancel</button>
+                    <button onClick={confirmCsvImport} disabled={matchedCount === 0 || isImporting}
+                      className="flex-1 py-2.5 bg-white hover:bg-zinc-100 text-black rounded-lg text-sm font-bold transition-colors disabled:opacity-40">
+                      {isImporting ? 'Importing...' : `Confirm Import (${matchedCount})`}
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Cancel + Flyer Cost Modal */}
         {cancelingOrder && (
@@ -688,7 +915,6 @@ export default function OrdersPage() {
                   </div>
                 </div>
 
-                {/* Status — always available, even if was_replaced */}
                 <div>
                   <p className="text-xs text-zinc-500 font-medium uppercase tracking-wider mb-2">Status</p>
                   {editingOrder?.was_replaced && (
