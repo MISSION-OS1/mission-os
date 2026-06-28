@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, FormEvent, useRef } from "react";
+import { useRouter } from "next/navigation";
 import { supabase } from '@/lib/supabase';
 import DashboardLayout from '@/components/DashboardLayout';
 import Papa from 'papaparse';
@@ -33,13 +34,14 @@ interface CsvRow {
   total_price: number;
   shipping_price: number;
   created_at: string;
-  // matching result
   matched_product?: Product;
   matched_variant?: Variant;
   matchStatus: 'matched' | 'product_not_found' | 'variant_not_found';
 }
 
 export default function OrdersPage() {
+  const router = useRouter();
+  const [dropId, setDropId] = useState<number | null>(null);
   const [orders, setOrders] = useState<any[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -52,11 +54,11 @@ export default function OrdersPage() {
   const [replacingQty, setReplacingQty] = useState("1");
   const [replacingColor, setReplacingColor] = useState("");
   const [replacingSize, setReplacingSize] = useState("");
+  const [replacingShippingPrice, setReplacingShippingPrice] = useState("0");
 
   const [cancelingOrder, setCancelingOrder] = useState<any | null>(null);
   const [flyerCostInput, setFlyerCostInput] = useState("5");
 
-  // ===== CSV Import State =====
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [csvRows, setCsvRows] = useState<CsvRow[]>([]);
   const [isCsvPreviewOpen, setIsCsvPreviewOpen] = useState(false);
@@ -66,43 +68,76 @@ export default function OrdersPage() {
   const [importSummary, setImportSummary] = useState<{ imported: number; skipped: number } | null>(null);
 
   const platforms = ["shopify", "tiktok", "facebook", "instagram", "WhatsApp", "other"];
-  const payments  = ["cash on delivery", "instapay", "credit card", "mylerz", "Abanoub", "Youssef", "Mina"];
+  const payments = ["cash on delivery", "instapay", "credit card", "mobile wallet", "mylerz", "Abanoub", "Youssef", "Mina"];
   const statuses  = ["pending", "shipped", "delivered", "canceled"];
+
+  // ✅ Kashier applies on credit card or mobile wallet only
+  const kashierPayments = ["credit card", "mobile wallet"];
 
   const emptyForm = {
     customer_name: "", customer_phone: "",
     product_id: "", product: "", variant_id: "", color: "", size: "",
     quantity: "1", platform: "other", payment_method: "cash on delivery",
     total_price: "0", shipping_price: "0", net_profit: "0", status: "pending",
+    // Deductions
+    additional_cost: "0",
+    kashier_percent: "2", kashier_fixed: "2",
+    ads_percent: "0",
+    returns_percent: "0",
   };
   const [formData, setFormData] = useState(emptyForm);
 
+  useEffect(() => {
+    const savedDropId = localStorage.getItem('selectedDropId');
+    if (!savedDropId) { router.replace('/drops'); return; }
+    setDropId(parseInt(savedDropId));
+  }, [router]);
+
   const fetchData = async () => {
+    if (!dropId) return;
     const [{ data: ordersData }, { data: productsData }] = await Promise.all([
-      supabase.from("orders").select("*").order("id", { ascending: false }),
-      supabase.from("products").select("id, name, price, cost, stock, product_variants(*)").order("name"),
+      supabase.from("orders").select("*").eq("drop_id", dropId).order("id", { ascending: false }),
+      supabase.from("products").select("id, name, price, cost, stock, product_variants(*)").eq("drop_id", dropId).order("name"),
     ]);
     if (ordersData) setOrders(ordersData);
     if (productsData) setProducts(productsData.map((p: any) => ({ ...p, variants: p.product_variants || [] })));
   };
 
-  useEffect(() => { fetchData(); }, []);
+  useEffect(() => { if (dropId) fetchData(); }, [dropId]);
 
-  useEffect(() => {
-    const total    = parseFloat(formData.total_price) || 0;
-    const shipping = parseFloat(formData.shipping_price) || 0;
-    setFormData(prev => ({ ...prev, net_profit: (total - shipping).toString() }));
-  }, [formData.total_price, formData.shipping_price]);
-
-  const selectedProduct   = products.find(p => p.id === parseInt(formData.product_id));
-  const selectedVariants  = selectedProduct?.variants || [];
-  const availableColors   = [...new Set(selectedVariants.map(v => v.color))];
-  const availableSizes    = SIZES.filter(s => selectedVariants.some(v => v.color === formData.color && v.size === s));
-  const selectedVariant   = selectedVariants.find(v => v.color === formData.color && v.size === formData.size);
-  const isInactiveStatus  = (s: string) => s?.toLowerCase() === "canceled";
-  const availableStock    = selectedVariant
+  const selectedProduct  = products.find(p => p.id === parseInt(formData.product_id));
+  const selectedVariants = selectedProduct?.variants || [];
+  const availableColors  = [...new Set(selectedVariants.map(v => v.color))];
+  const availableSizes   = SIZES.filter(s => selectedVariants.some(v => v.color === formData.color && v.size === s));
+  const selectedVariant  = selectedVariants.find(v => v.color === formData.color && v.size === formData.size);
+  const isInactiveStatus = (s: string) => s?.toLowerCase() === "canceled";
+  const availableStock   = selectedVariant
     ? selectedVariant.stock + (editingOrder?.variant_id === selectedVariant.id && !isInactiveStatus(editingOrder?.status) ? (editingOrder?.quantity || 1) : 0)
     : 0;
+
+  // ✅ حساب الـ net profit أوتوماتيك مع كل تغيير في الـ deductions
+  const calcNetProfit = (data: typeof formData, product?: Product) => {
+    const total         = parseFloat(data.total_price) || 0;
+    const cost          = (product?.cost || selectedProduct?.cost || 0) * (parseInt(data.quantity) || 1);
+    const grossProfit   = total - cost;
+
+    const additionalCost  = parseFloat(data.additional_cost) || 0;
+    const isKashier       = kashierPayments.includes(data.payment_method.toLowerCase());
+    const kashierFee      = isKashier ? ((parseFloat(data.kashier_percent) || 0) / 100 * total) + (parseFloat(data.kashier_fixed) || 0) : 0;
+    const adsFee          = (parseFloat(data.ads_percent) || 0) / 100 * grossProfit;
+    const returnsFee      = (parseFloat(data.returns_percent) || 0) / 100 * grossProfit;
+
+    return grossProfit - additionalCost - kashierFee - adsFee - returnsFee;
+  };
+
+  useEffect(() => {
+    const net = calcNetProfit(formData);
+    setFormData(prev => ({ ...prev, net_profit: net.toFixed(2) }));
+  }, [
+    formData.total_price, formData.quantity, formData.product_id,
+    formData.additional_cost, formData.kashier_percent, formData.kashier_fixed,
+    formData.ads_percent, formData.returns_percent, formData.payment_method,
+  ]);
 
   const handleProductChange = (productId: string) => {
     const p = products.find(pr => pr.id === parseInt(productId));
@@ -136,20 +171,25 @@ export default function OrdersPage() {
   const openEdit = (order: any) => {
     setEditingOrder(order);
     setFormData({
-      customer_name:  order.customer_name  || "",
-      customer_phone: order.customer_phone || "",
-      product_id:     order.product_id?.toString() || "",
-      product:        order.product        || "",
-      variant_id:     order.variant_id?.toString()  || "",
-      color:          order.color          || "",
-      size:           order.size           || "",
-      quantity:       String(order.quantity  ?? "1"),
-      platform:       order.platform       || "other",
-      payment_method: order.payment_method || "cash on delivery",
-      total_price:    String(order.total_price    ?? "0"),
-      shipping_price: String(order.shipping_price ?? "0"),
-      net_profit:     String(order.net_profit     ?? "0"),
-      status:         order.status         || "pending",
+      customer_name:    order.customer_name    || "",
+      customer_phone:   order.customer_phone   || "",
+      product_id:       order.product_id?.toString() || "",
+      product:          order.product          || "",
+      variant_id:       order.variant_id?.toString()  || "",
+      color:            order.color            || "",
+      size:             order.size             || "",
+      quantity:         String(order.quantity  ?? "1"),
+      platform:         order.platform         || "other",
+      payment_method:   order.payment_method   || "cash on delivery",
+      total_price:      String(order.total_price    ?? "0"),
+      shipping_price:   String(order.shipping_price ?? "0"),
+      net_profit:       String(order.net_profit     ?? "0"),
+      status:           order.status           || "pending",
+      additional_cost:  String(order.additional_cost  ?? "0"),
+      kashier_percent:  String(order.kashier_percent  ?? "2"),
+      kashier_fixed:    String(order.kashier_fixed    ?? "2"),
+      ads_percent:      String(order.ads_percent      ?? "0"),
+      returns_percent:  String(order.returns_percent  ?? "0"),
     });
     setIsModalOpen(true);
   };
@@ -166,22 +206,15 @@ export default function OrdersPage() {
     }
   };
 
-  // ===== Cancel flow with flyer cost =====
-  const openCancelModal = (order: any) => {
-    setCancelingOrder(order);
-    setFlyerCostInput("5");
-  };
+  const openCancelModal = (order: any) => { setCancelingOrder(order); setFlyerCostInput("5"); };
 
   const confirmCancel = async () => {
     if (!cancelingOrder) return;
     const flyerCost = parseFloat(flyerCostInput) || 0;
-
     if (cancelingOrder.variant_id && !isInactiveStatus(cancelingOrder.status)) {
       await adjustVariantStock(cancelingOrder.variant_id, cancelingOrder.quantity || 1);
     }
-
     await supabase.from("orders").update({ status: "canceled", flyer_cost: flyerCost }).eq("id", cancelingOrder.id);
-
     if (editingOrder?.id === cancelingOrder.id) setIsModalOpen(false);
     setCancelingOrder(null);
     fetchData();
@@ -189,35 +222,40 @@ export default function OrdersPage() {
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
+    if (!dropId) return;
     const qty       = parseInt(formData.quantity) || 1;
     const productId = formData.product_id ? parseInt(formData.product_id) : null;
     const variantId = formData.variant_id ? parseInt(formData.variant_id) : null;
 
     const payload = {
-      customer_name:  formData.customer_name,
-      customer_phone: formData.customer_phone,
-      product_id:     productId,
-      product:        formData.product,
-      variant_id:     variantId,
-      color:          formData.color,
-      size:           formData.size,
-      quantity:       qty,
-      platform:       formData.platform,
-      payment_method: formData.payment_method,
-      total_price:    parseFloat(formData.total_price)    || 0,
-      shipping_price: parseFloat(formData.shipping_price) || 0,
-      net_profit:     parseFloat(formData.net_profit)     || 0,
-      status:         formData.status,
+      customer_name:   formData.customer_name,
+      customer_phone:  formData.customer_phone,
+      product_id:      productId,
+      product:         formData.product,
+      variant_id:      variantId,
+      color:           formData.color,
+      size:            formData.size,
+      quantity:        qty,
+      platform:        formData.platform,
+      payment_method:  formData.payment_method,
+      total_price:     parseFloat(formData.total_price)    || 0,
+      shipping_price:  parseFloat(formData.shipping_price) || 0,
+      net_profit:      parseFloat(formData.net_profit)     || 0,
+      status:          formData.status,
+      drop_id:         dropId,
+      additional_cost: parseFloat(formData.additional_cost) || 0,
+      kashier_percent: parseFloat(formData.kashier_percent) || 0,
+      kashier_fixed:   parseFloat(formData.kashier_fixed)   || 0,
+      ads_percent:     parseFloat(formData.ads_percent)     || 0,
+      returns_percent: parseFloat(formData.returns_percent) || 0,
     };
 
     if (editingOrder) {
-      const oldQty       = editingOrder.quantity || 1;
+      const oldQty = editingOrder.quantity || 1;
       const oldVariantId = editingOrder.variant_id;
-      const wasInactive  = isInactiveStatus(editingOrder.status);
-      const nowInactive  = isInactiveStatus(formData.status);
-
+      const wasInactive = isInactiveStatus(editingOrder.status);
+      const nowInactive = isInactiveStatus(formData.status);
       await supabase.from("orders").update(payload).eq("id", editingOrder.id);
-
       if (variantId) {
         const variantChanged = oldVariantId !== variantId;
         if (variantChanged) {
@@ -249,60 +287,44 @@ export default function OrdersPage() {
     fetchData();
   };
 
-  // ===== Replacing =====
   const openReplacingModal = (order: any) => {
     setReplacingOrder(order);
-    setReplacingProductId("");
-    setReplacingVariantId("");
-    setReplacingQty("1");
-    setReplacingColor("");
-    setReplacingSize("");
+    setReplacingProductId(""); setReplacingVariantId(""); setReplacingQty("1");
+    setReplacingColor(""); setReplacingSize("");
+    setReplacingShippingPrice(order.shipping_price?.toString() || "0");
   };
 
-  const replacingProduct  = products.find(p => p.id === parseInt(replacingProductId));
-  const replacingVariants = replacingProduct?.variants || [];
-  const replacingColors   = [...new Set(replacingVariants.map(v => v.color))];
-  const replacingSizes    = SIZES.filter(s => replacingVariants.some(v => v.color === replacingColor && v.size === s));
-  const replacingVariant  = replacingVariants.find(v => v.color === replacingColor && v.size === replacingSize);
+  const replacingProduct    = products.find(p => p.id === parseInt(replacingProductId));
+  const replacingVariants   = replacingProduct?.variants || [];
+  const replacingColors     = [...new Set(replacingVariants.map(v => v.color))];
+  const replacingSizes      = SIZES.filter(s => replacingVariants.some(v => v.color === replacingColor && v.size === s));
+  const replacingVariant    = replacingVariants.find(v => v.color === replacingColor && v.size === replacingSize);
   const replacingAvailStock = replacingVariant?.stock || 0;
 
   const handleConfirmReplacing = async () => {
     if (!replacingOrder || !replacingVariant || !replacingProduct) return;
     const qty = parseInt(replacingQty) || 1;
-
+    const newShipping = parseFloat(replacingShippingPrice) || 0;
     if (replacingOrder.variant_id && !isInactiveStatus(replacingOrder.status)) {
       await adjustVariantStock(replacingOrder.variant_id, replacingOrder.quantity || 1);
     }
     await adjustVariantStock(replacingVariant.id, -qty);
-
     const newTotal  = replacingProduct.price * qty;
-    const newProfit = newTotal - (parseFloat(replacingOrder.shipping_price) || 0);
-
+    const newProfit = newTotal - (replacingProduct.cost * qty);
     const keepStatus = isInactiveStatus(replacingOrder.status) ? "pending" : replacingOrder.status;
-
     await supabase.from("orders").update({
-      was_replaced: true,
-      status: keepStatus,
-      replaced_product: replacingOrder.product,
-      replaced_product_id: replacingOrder.product_id,
-      replaced_color: replacingOrder.color,
-      replaced_size: replacingOrder.size,
-      product_id: replacingProduct.id,
-      product: replacingProduct.name,
-      variant_id: replacingVariant.id,
-      color: replacingColor,
-      size: replacingSize,
-      quantity: qty,
-      total_price: newTotal,
-      net_profit: newProfit,
+      was_replaced: true, status: keepStatus,
+      replaced_product: replacingOrder.product, replaced_product_id: replacingOrder.product_id,
+      replaced_color: replacingOrder.color, replaced_size: replacingOrder.size,
+      replaced_shipping_price: replacingOrder.shipping_price,
+      product_id: replacingProduct.id, product: replacingProduct.name,
+      variant_id: replacingVariant.id, color: replacingColor, size: replacingSize,
+      quantity: qty, total_price: newTotal, net_profit: newProfit, shipping_price: newShipping,
     }).eq("id", replacingOrder.id);
-
     setReplacingOrder(null);
     fetchData();
   };
 
-  // ===== CSV Import =====
-  // اسم المنتج في Shopify بيبقى "Product Name - Color"، نفصل الاسم عن اللون
   const splitProductColor = (itemName: string) => {
     const parts = itemName.split(' - ');
     if (parts.length >= 2) {
@@ -313,99 +335,68 @@ export default function OrdersPage() {
     return { name: itemName.trim(), color: '' };
   };
 
-  const matchCsvRow = (productName: string, color: string): { product?: Product; variant?: Variant; status: CsvRow['matchStatus'] } => {
+  const matchCsvRow = (productName: string, color: string) => {
     const product = products.find(p => p.name.trim().toLowerCase() === productName.trim().toLowerCase());
-    if (!product) return { status: 'product_not_found' };
+    if (!product) return { status: 'product_not_found' as const };
     const variant = product.variants?.find(v => v.color.trim().toLowerCase() === color.trim().toLowerCase());
-    if (!variant) return { product, status: 'variant_not_found' };
-    return { product, variant, status: 'matched' };
+    if (!variant) return { product, status: 'variant_not_found' as const };
+    return { product, variant, status: 'matched' as const };
   };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
     Papa.parse(file, {
-      header: true,
-      skipEmptyLines: true,
+      header: true, skipEmptyLines: true,
       complete: (results: any) => {
         const rows: CsvRow[] = results.data.map((row: any) => {
           const itemName = row['Item Name'] || '';
           const { name, color } = splitProductColor(itemName);
           const match = matchCsvRow(name, color);
-
           return {
             customer_name: row['Billing Name'] || row['Shipping Name'] || row['Name'] || 'Unknown',
             customer_phone: row['Billing Phone'] || row['Shipping Phone'] || '',
-            product_name: name,
-            color,
+            product_name: name, color,
             quantity: parseInt(row['Item Quantity']) || 1,
             total_price: parseFloat(row['Item Total Price']) || 0,
             shipping_price: parseFloat(row['Shipping']) || 0,
             created_at: row['Created At'] || '',
-            matched_product: match.product,
-            matched_variant: match.variant,
+            matched_product: match.product, matched_variant: (match as any).variant,
             matchStatus: match.status,
           };
-        }).filter((r: CsvRow) => r.product_name); // skip totally empty rows
-
-        setCsvRows(rows);
-        setIsCsvPreviewOpen(true);
-        setImportSummary(null);
+        }).filter((r: CsvRow) => r.product_name);
+        setCsvRows(rows); setIsCsvPreviewOpen(true); setImportSummary(null);
       },
     });
-
-    // reset input so the same file can be re-selected later
     e.target.value = '';
   };
 
   const confirmCsvImport = async () => {
+    if (!dropId) return;
     setIsImporting(true);
-    let imported = 0;
-    let skipped = 0;
-
+    let imported = 0, skipped = 0;
     for (const row of csvRows) {
-      if (row.matchStatus !== 'matched' || !row.matched_product || !row.matched_variant) {
-        skipped++;
-        continue;
-      }
-
-      const netProfit = row.total_price - row.shipping_price;
-      const payload = {
-        customer_name: row.customer_name,
-        customer_phone: row.customer_phone,
-        product_id: row.matched_product.id,
-        product: row.matched_product.name,
-        variant_id: row.matched_variant.id,
-        color: row.matched_variant.color,
-        size: row.matched_variant.size,
-        quantity: row.quantity,
-        platform: csvPlatform,
-        payment_method: csvPayment,
-        total_price: row.total_price,
-        shipping_price: row.shipping_price,
-        net_profit: netProfit,
-        status: "pending",
-      };
-
-      await supabase.from("orders").insert([payload]);
+      if (row.matchStatus !== 'matched' || !row.matched_product || !row.matched_variant) { skipped++; continue; }
+      const netProfit = row.total_price - ((row.matched_product?.cost || 0) * row.quantity);
+      await supabase.from("orders").insert([{
+        customer_name: row.customer_name, customer_phone: row.customer_phone,
+        product_id: row.matched_product.id, product: row.matched_product.name,
+        variant_id: row.matched_variant.id, color: row.matched_variant.color, size: row.matched_variant.size,
+        quantity: row.quantity, platform: csvPlatform, payment_method: csvPayment,
+        total_price: row.total_price, shipping_price: row.shipping_price,
+        net_profit: netProfit, status: "pending", drop_id: dropId,
+      }]);
       await adjustVariantStock(row.matched_variant.id, -row.quantity);
       const { data: prod } = await supabase.from("products").select("sales_count").eq("id", row.matched_product.id).single();
       await supabase.from("products").update({ sales_count: (prod?.sales_count || 0) + 1 }).eq("id", row.matched_product.id);
-
       imported++;
     }
-
     setImportSummary({ imported, skipped });
     setIsImporting(false);
     fetchData();
   };
 
-  const closeCsvModal = () => {
-    setIsCsvPreviewOpen(false);
-    setCsvRows([]);
-    setImportSummary(null);
-  };
+  const closeCsvModal = () => { setIsCsvPreviewOpen(false); setCsvRows([]); setImportSummary(null); };
 
   const statusStyle = (s: string) => ({
     delivered: "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20",
@@ -415,15 +406,25 @@ export default function OrdersPage() {
   }[s?.toLowerCase()] || "bg-zinc-800 text-zinc-400");
 
   const platformIcon = (p: string) => ({ shopify:"🛒", tiktok:"🎵", facebook:"📘", instagram:"📸", whatsapp:"💬", other:"🌐" }[p?.toLowerCase()] || "🌐");
-  const isInactive  = (o: any) => isInactiveStatus(o.status);
-
+  const isInactive = (o: any) => isInactiveStatus(o.status);
   const inputClass = "w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-zinc-600 transition-colors";
-
+  const smallInput = "w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5 text-sm text-white focus:outline-none focus:border-zinc-600 transition-colors text-center";
   const replacementLabel = (full: { product?: string; color?: string; size?: string }) =>
     [full.product, full.color, full.size].filter(Boolean).join(' · ');
-
   const matchedCount = csvRows.filter(r => r.matchStatus === 'matched').length;
   const skippedCount = csvRows.length - matchedCount;
+
+  // حساب الـ deductions للعرض في الفورم
+  const isKashierPayment = kashierPayments.includes(formData.payment_method.toLowerCase());
+  const displayTotal      = parseFloat(formData.total_price) || 0;
+  const displayCost       = (selectedProduct?.cost || 0) * (parseInt(formData.quantity) || 1);
+  const displayGross      = displayTotal - displayCost;
+  const displayAdditional = parseFloat(formData.additional_cost) || 0;
+  const displayKashier    = isKashierPayment ? ((parseFloat(formData.kashier_percent) || 0) / 100 * displayTotal) + (parseFloat(formData.kashier_fixed) || 0) : 0;
+  const displayAds        = (parseFloat(formData.ads_percent) || 0) / 100 * displayGross;
+  const displayReturns    = (parseFloat(formData.returns_percent) || 0) / 100 * displayGross;
+
+  if (!dropId) return null;
 
   return (
     <DashboardLayout>
@@ -438,9 +439,7 @@ export default function OrdersPage() {
           </div>
           <div className="flex gap-2">
             <input ref={fileInputRef} type="file" accept=".csv" onChange={handleFileSelect} className="hidden" />
-            <button onClick={() => fileInputRef.current?.click()} className="bg-zinc-900 border border-zinc-800 text-zinc-300 px-4 py-2.5 rounded-lg font-bold text-sm hover:bg-zinc-800 transition-colors whitespace-nowrap">
-              ⬆ Upload CSV
-            </button>
+            <button onClick={() => fileInputRef.current?.click()} className="bg-zinc-900 border border-zinc-800 text-zinc-300 px-4 py-2.5 rounded-lg font-bold text-sm hover:bg-zinc-800 transition-colors whitespace-nowrap">⬆ Upload CSV</button>
             <button onClick={openNew} className="bg-white text-black px-4 py-2.5 rounded-lg font-bold text-sm hover:bg-zinc-200 transition-colors whitespace-nowrap">+ New Order</button>
           </div>
         </div>
@@ -454,9 +453,7 @@ export default function OrdersPage() {
               <div className="flex items-center justify-between flex-wrap gap-1.5">
                 <span className={`font-mono text-xs text-zinc-500 ${isInactive(o) ? "line-through" : ""}`}>#M{o.id}</span>
                 <div className="flex items-center gap-1.5">
-                  {o.was_replaced && (
-                    <span className="px-2 py-1 rounded-md text-[11px] font-medium uppercase tracking-wide bg-purple-500/10 text-purple-400 border border-purple-500/20">Replaced</span>
-                  )}
+                  {o.was_replaced && <span className="px-2 py-1 rounded-md text-[11px] font-medium uppercase tracking-wide bg-purple-500/10 text-purple-400 border border-purple-500/20">Replaced</span>}
                   <span className={`px-2 py-1 rounded-md text-[11px] font-medium uppercase tracking-wide ${statusStyle(o.status)}`}>{o.status}</span>
                 </div>
               </div>
@@ -465,17 +462,9 @@ export default function OrdersPage() {
                 {o.customer_phone && <p className="text-zinc-500 text-xs mt-0.5">{o.customer_phone}</p>}
               </div>
               <div className="space-y-0.5">
-                {o.was_replaced && (
-                  <p className="text-zinc-600 text-xs line-through">
-                    {replacementLabel({ product: o.replaced_product, color: o.replaced_color, size: o.replaced_size })}
-                  </p>
-                )}
-                <p className={`text-sm ${isInactive(o) && !o.was_replaced ? "line-through text-zinc-500" : "text-zinc-300"}`}>
-                  {o.product || "—"}
-                </p>
-                {(o.color || o.size) && (
-                  <p className="text-xs text-zinc-500">{o.color} · {o.size} · ×{o.quantity || 1}</p>
-                )}
+                {o.was_replaced && <p className="text-zinc-600 text-xs line-through">{replacementLabel({ product: o.replaced_product, color: o.replaced_color, size: o.replaced_size })}</p>}
+                <p className={`text-sm ${isInactive(o) && !o.was_replaced ? "line-through text-zinc-500" : "text-zinc-300"}`}>{o.product || "—"}</p>
+                {(o.color || o.size) && <p className="text-xs text-zinc-500">{o.color} · {o.size} · ×{o.quantity || 1}</p>}
               </div>
               <div className="flex items-center justify-between text-xs text-zinc-500">
                 <span>{platformIcon(o.platform)} {o.platform}</span>
@@ -486,9 +475,7 @@ export default function OrdersPage() {
                   Total: <span className="text-white font-mono font-medium">EGP {o.total_price?.toLocaleString()}</span>
                   <span className="mx-2">·</span>
                   Ship: <span className="text-blue-400 font-mono">EGP {o.shipping_price?.toLocaleString()}</span>
-                  {o.status?.toLowerCase() === 'canceled' && (
-                    <><span className="mx-2">·</span>Flyer: <span className="text-red-400 font-mono">EGP {o.flyer_cost?.toLocaleString() || 0}</span></>
-                  )}
+                  {o.status?.toLowerCase() === 'canceled' && <><span className="mx-2">·</span>Flyer: <span className="text-red-400 font-mono">EGP {o.flyer_cost?.toLocaleString() || 0}</span></>}
                 </div>
                 <span className="text-emerald-400 font-bold font-mono text-sm">EGP {o.net_profit?.toLocaleString()}</span>
               </div>
@@ -515,7 +502,7 @@ export default function OrdersPage() {
                 <th className="px-4 py-3">Payment</th>
                 <th className="px-4 py-3">Total</th>
                 <th className="px-4 py-3">Shipping</th>
-                <th className="px-4 py-3">Profit</th>
+                <th className="px-4 py-3">Net Profit</th>
                 <th className="px-4 py-3">Status</th>
                 <th className="px-4 py-3 text-right">Actions</th>
               </tr>
@@ -531,27 +518,17 @@ export default function OrdersPage() {
                     {o.customer_phone && <p className="text-zinc-500 text-xs mt-0.5">{o.customer_phone}</p>}
                   </td>
                   <td className="px-4 py-3">
-                    {o.was_replaced && (
-                      <p className="text-zinc-600 text-xs line-through mb-0.5">{o.replaced_product}</p>
-                    )}
+                    {o.was_replaced && <p className="text-zinc-600 text-xs line-through mb-0.5">{o.replaced_product}</p>}
                     <p className={`text-sm ${o.was_replaced ? "text-white font-medium" : "text-zinc-300"}`}>{o.product || "—"}</p>
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex flex-col gap-1">
                       {o.was_replaced ? (
                         <>
-                          {o.replaced_color && (
-                            <span className="text-[11px] bg-zinc-900 border border-zinc-800 px-2 py-0.5 rounded text-zinc-600 line-through w-fit">{o.replaced_color}</span>
-                          )}
-                          {o.color && (
-                            <span className="text-[11px] bg-zinc-900 border border-purple-500/30 px-2 py-0.5 rounded text-purple-300 w-fit">{o.color}</span>
-                          )}
-                          {o.replaced_size && (
-                            <span className="text-[11px] bg-zinc-900 border border-zinc-800 px-2 py-0.5 rounded text-zinc-600 line-through w-fit">{o.replaced_size}</span>
-                          )}
-                          {o.size && (
-                            <span className="text-[11px] bg-zinc-900 border border-purple-500/30 px-2 py-0.5 rounded text-purple-300 w-fit">{o.size}</span>
-                          )}
+                          {o.replaced_color && <span className="text-[11px] bg-zinc-900 border border-zinc-800 px-2 py-0.5 rounded text-zinc-600 line-through w-fit">{o.replaced_color}</span>}
+                          {o.color && <span className="text-[11px] bg-zinc-900 border border-purple-500/30 px-2 py-0.5 rounded text-purple-300 w-fit">{o.color}</span>}
+                          {o.replaced_size && <span className="text-[11px] bg-zinc-900 border border-zinc-800 px-2 py-0.5 rounded text-zinc-600 line-through w-fit">{o.replaced_size}</span>}
+                          {o.size && <span className="text-[11px] bg-zinc-900 border border-purple-500/30 px-2 py-0.5 rounded text-purple-300 w-fit">{o.size}</span>}
                         </>
                       ) : (
                         <>
@@ -566,17 +543,18 @@ export default function OrdersPage() {
                   <td className="px-4 py-3 text-zinc-400 text-xs capitalize">{o.payment_method || "—"}</td>
                   <td className="px-4 py-3 font-mono text-white text-sm">{o.total_price?.toLocaleString()}</td>
                   <td className="px-4 py-3 font-mono text-blue-400 text-sm">
-                    {o.shipping_price?.toLocaleString()}
-                    {o.status?.toLowerCase() === 'canceled' && o.flyer_cost > 0 && (
-                      <span className="block text-[10px] text-red-400 font-sans">+ {o.flyer_cost} flyer</span>
-                    )}
+                    {o.was_replaced && o.replaced_shipping_price != null ? (
+                      <div className="space-y-0.5">
+                        <span className="block text-zinc-600 line-through text-xs">EGP {o.replaced_shipping_price?.toLocaleString()}</span>
+                        <span className="block text-blue-400">{o.shipping_price?.toLocaleString()}</span>
+                      </div>
+                    ) : o.shipping_price?.toLocaleString()}
+                    {o.status?.toLowerCase() === 'canceled' && o.flyer_cost > 0 && <span className="block text-[10px] text-red-400 font-sans">+ {o.flyer_cost} flyer</span>}
                   </td>
                   <td className="px-4 py-3 font-mono text-emerald-400 font-bold text-sm">{o.net_profit?.toLocaleString()}</td>
                   <td className="px-4 py-3">
                     <div className="flex flex-col gap-1">
-                      {o.was_replaced && (
-                        <span className="px-2 py-0.5 rounded-md text-[10px] font-medium uppercase tracking-wide bg-purple-500/10 text-purple-400 border border-purple-500/20 w-fit">Replaced</span>
-                      )}
+                      {o.was_replaced && <span className="px-2 py-0.5 rounded-md text-[10px] font-medium uppercase tracking-wide bg-purple-500/10 text-purple-400 border border-purple-500/20 w-fit">Replaced</span>}
                       <span className={`px-2 py-1 rounded-md text-[11px] font-medium uppercase tracking-wide w-fit ${statusStyle(o.status)}`}>{o.status}</span>
                     </div>
                   </td>
@@ -593,61 +571,50 @@ export default function OrdersPage() {
           </table>
         </div>
 
-        {/* ===== CSV Import Preview Modal ===== */}
+        {/* CSV Import Modal */}
         {isCsvPreviewOpen && (
           <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
             <div className="bg-zinc-950 border border-zinc-800 rounded-xl w-full max-w-4xl overflow-hidden flex flex-col max-h-[90vh]">
               <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-800">
                 <div>
                   <h2 className="text-base font-bold text-white">Import Orders from CSV</h2>
-                  {!importSummary && (
-                    <p className="text-xs text-zinc-500 mt-0.5">{matchedCount} matched · {skippedCount} will be skipped</p>
-                  )}
+                  {!importSummary && <p className="text-xs text-zinc-500 mt-0.5">{matchedCount} matched · {skippedCount} will be skipped</p>}
                 </div>
                 <button onClick={closeCsvModal} className="text-zinc-500 hover:text-white text-xl leading-none">✕</button>
               </div>
-
               {importSummary ? (
                 <div className="p-8 text-center space-y-4">
                   <div className="text-4xl">✅</div>
                   <h3 className="text-lg font-bold text-white">Import Complete</h3>
                   <p className="text-sm text-zinc-400">
-                    <span className="text-emerald-400 font-bold">{importSummary.imported}</span> orders imported successfully
-                    {importSummary.skipped > 0 && (
-                      <> · <span className="text-red-400 font-bold">{importSummary.skipped}</span> skipped (product not found)</>
-                    )}
+                    <span className="text-emerald-400 font-bold">{importSummary.imported}</span> orders imported
+                    {importSummary.skipped > 0 && <> · <span className="text-red-400 font-bold">{importSummary.skipped}</span> skipped</>}
                   </p>
-                  <button onClick={closeCsvModal} className="px-6 py-2.5 bg-white text-black rounded-lg text-sm font-bold hover:bg-zinc-200 transition-colors">
-                    Done
-                  </button>
+                  <button onClick={closeCsvModal} className="px-6 py-2.5 bg-white text-black rounded-lg text-sm font-bold">Done</button>
                 </div>
               ) : (
                 <>
                   <div className="px-6 py-4 border-b border-zinc-800 flex flex-wrap gap-4">
                     <div className="flex-1 min-w-[140px]">
-                      <label className="text-[11px] text-zinc-500 uppercase tracking-wider mb-1 block">Platform for all rows</label>
+                      <label className="text-[11px] text-zinc-500 uppercase tracking-wider mb-1 block">Platform</label>
                       <select className={inputClass} value={csvPlatform} onChange={(e) => setCsvPlatform(e.target.value)}>
                         {platforms.map(p => <option key={p} value={p} className="bg-zinc-900 capitalize">{p}</option>)}
                       </select>
                     </div>
                     <div className="flex-1 min-w-[140px]">
-                      <label className="text-[11px] text-zinc-500 uppercase tracking-wider mb-1 block">Payment for all rows</label>
+                      <label className="text-[11px] text-zinc-500 uppercase tracking-wider mb-1 block">Payment</label>
                       <select className={inputClass} value={csvPayment} onChange={(e) => setCsvPayment(e.target.value)}>
                         {payments.map(p => <option key={p} value={p} className="bg-zinc-900 capitalize">{p}</option>)}
                       </select>
                     </div>
                   </div>
-
                   <div className="overflow-y-auto flex-1">
                     <table className="w-full text-left text-xs">
                       <thead className="bg-zinc-900 border-b border-zinc-800 text-zinc-500 uppercase tracking-wider sticky top-0">
                         <tr>
-                          <th className="px-4 py-2.5">Customer</th>
-                          <th className="px-4 py-2.5">Product</th>
-                          <th className="px-4 py-2.5">Color</th>
-                          <th className="px-4 py-2.5 text-center">Qty</th>
-                          <th className="px-4 py-2.5 text-right">Total</th>
-                          <th className="px-4 py-2.5 text-right">Shipping</th>
+                          <th className="px-4 py-2.5">Customer</th><th className="px-4 py-2.5">Product</th>
+                          <th className="px-4 py-2.5">Color</th><th className="px-4 py-2.5 text-center">Qty</th>
+                          <th className="px-4 py-2.5 text-right">Total</th><th className="px-4 py-2.5 text-right">Shipping</th>
                           <th className="px-4 py-2.5 text-center">Match</th>
                         </tr>
                       </thead>
@@ -670,11 +637,10 @@ export default function OrdersPage() {
                       </tbody>
                     </table>
                   </div>
-
                   <div className="flex gap-3 px-6 py-4 border-t border-zinc-800">
-                    <button onClick={closeCsvModal} className="flex-1 py-2.5 bg-zinc-900 hover:bg-zinc-800 text-white rounded-lg text-sm font-medium transition-colors">Cancel</button>
+                    <button onClick={closeCsvModal} className="flex-1 py-2.5 bg-zinc-900 hover:bg-zinc-800 text-white rounded-lg text-sm font-medium">Cancel</button>
                     <button onClick={confirmCsvImport} disabled={matchedCount === 0 || isImporting}
-                      className="flex-1 py-2.5 bg-white hover:bg-zinc-100 text-black rounded-lg text-sm font-bold transition-colors disabled:opacity-40">
+                      className="flex-1 py-2.5 bg-white hover:bg-zinc-100 text-black rounded-lg text-sm font-bold disabled:opacity-40">
                       {isImporting ? 'Importing...' : `Confirm Import (${matchedCount})`}
                     </button>
                   </div>
@@ -684,33 +650,24 @@ export default function OrdersPage() {
           </div>
         )}
 
-        {/* Cancel + Flyer Cost Modal */}
+        {/* Cancel Modal */}
         {cancelingOrder && (
           <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
             <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-6 w-full max-w-sm space-y-4">
               <h2 className="text-lg font-bold text-white">Cancel Order</h2>
-              <p className="text-sm text-zinc-400">
-                Shipping cost for this order: <span className="text-blue-400 font-mono">EGP {cancelingOrder.shipping_price?.toLocaleString() || 0}</span>
-              </p>
+              <p className="text-sm text-zinc-400">Shipping: <span className="text-blue-400 font-mono">EGP {cancelingOrder.shipping_price?.toLocaleString() || 0}</span></p>
               <div>
                 <label className="block text-xs font-semibold text-zinc-400 uppercase mb-1">Flyer Cost (EGP)</label>
-                <input
-                  type="number" min="0" step="0.01" autoFocus
-                  value={flyerCostInput}
-                  onChange={(e) => setFlyerCostInput(e.target.value)}
-                  className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-zinc-600"
-                />
+                <input type="number" min="0" step="0.01" autoFocus value={flyerCostInput} onChange={(e) => setFlyerCostInput(e.target.value)}
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-zinc-600" />
               </div>
               <div className="bg-red-500/5 border border-red-500/20 rounded-lg px-4 py-3">
                 <p className="text-[11px] text-red-400 uppercase tracking-wider mb-1">Total Return Loss</p>
-                <p className="text-xl font-bold text-red-400 font-mono">
-                  EGP {((cancelingOrder.shipping_price || 0) + (parseFloat(flyerCostInput) || 0)).toLocaleString()}
-                </p>
-                <p className="text-[11px] text-zinc-500 mt-0.5">Shipping + Flyer (stock will be restored)</p>
+                <p className="text-xl font-bold text-red-400 font-mono">EGP {((cancelingOrder.shipping_price || 0) + (parseFloat(flyerCostInput) || 0)).toLocaleString()}</p>
               </div>
               <div className="flex gap-3">
-                <button onClick={() => setCancelingOrder(null)} className="flex-1 py-2.5 bg-zinc-900 hover:bg-zinc-800 text-white rounded-lg text-sm font-medium transition-colors">Back</button>
-                <button onClick={confirmCancel} className="flex-1 py-2.5 bg-red-500 hover:bg-red-600 text-white rounded-lg text-sm font-bold transition-colors">Confirm Cancel</button>
+                <button onClick={() => setCancelingOrder(null)} className="flex-1 py-2.5 bg-zinc-900 text-white rounded-lg text-sm font-medium">Back</button>
+                <button onClick={confirmCancel} className="flex-1 py-2.5 bg-red-500 hover:bg-red-600 text-white rounded-lg text-sm font-bold">Confirm Cancel</button>
               </div>
             </div>
           </div>
@@ -724,13 +681,11 @@ export default function OrdersPage() {
                 <h2 className="text-base font-bold text-white">Replace Order</h2>
                 <button onClick={() => setReplacingOrder(null)} className="text-zinc-500 hover:text-white text-xl leading-none">✕</button>
               </div>
-              <div className="p-6 space-y-4">
+              <div className="p-6 space-y-4 max-h-[80vh] overflow-y-auto">
                 <div className="bg-zinc-900/60 border border-zinc-800 rounded-lg px-4 py-3">
                   <p className="text-[11px] text-zinc-500 uppercase tracking-wider mb-1">Current Order</p>
                   <p className="text-zinc-300 font-semibold">{replacingOrder.product}</p>
-                  {(replacingOrder.color || replacingOrder.size) && (
-                    <p className="text-xs text-zinc-500 mt-0.5">{replacingOrder.color} · {replacingOrder.size}</p>
-                  )}
+                  {(replacingOrder.color || replacingOrder.size) && <p className="text-xs text-zinc-500 mt-0.5">{replacingOrder.color} · {replacingOrder.size}</p>}
                 </div>
                 <div>
                   <p className="text-xs text-zinc-500 uppercase tracking-wider mb-2">New Product</p>
@@ -745,9 +700,7 @@ export default function OrdersPage() {
                     <div className="flex flex-wrap gap-2">
                       {replacingColors.map(c => (
                         <button key={c} type="button" onClick={() => { setReplacingColor(c); setReplacingSize(""); setReplacingVariantId(""); }}
-                          className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${replacingColor === c ? "bg-white text-black border-white" : "bg-zinc-900 text-zinc-400 border-zinc-800 hover:border-zinc-600"}`}>
-                          {c}
-                        </button>
+                          className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${replacingColor === c ? "bg-white text-black border-white" : "bg-zinc-900 text-zinc-400 border-zinc-800 hover:border-zinc-600"}`}>{c}</button>
                       ))}
                     </div>
                   </div>
@@ -761,9 +714,7 @@ export default function OrdersPage() {
                         return (
                           <button key={s} type="button" onClick={() => { setReplacingSize(s); setReplacingVariantId(v?.id?.toString() || ""); }}
                             className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${replacingSize === s ? "bg-white text-black border-white" : "bg-zinc-900 text-zinc-400 border-zinc-800 hover:border-zinc-600"} ${v?.stock === 0 ? "opacity-40 cursor-not-allowed" : ""}`}
-                            disabled={v?.stock === 0}>
-                            {s} <span className="text-[10px] opacity-60">({v?.stock || 0})</span>
-                          </button>
+                            disabled={v?.stock === 0}>{s} <span className="text-[10px] opacity-60">({v?.stock || 0})</span></button>
                         );
                       })}
                     </div>
@@ -776,20 +727,24 @@ export default function OrdersPage() {
                     <p className="text-[11px] text-zinc-600 mt-1">{replacingAvailStock} available</p>
                   </div>
                 )}
+                {replacingVariant && (
+                  <div>
+                    <p className="text-xs text-zinc-500 uppercase tracking-wider mb-2">New Shipping Cost (EGP)</p>
+                    {replacingOrder.shipping_price > 0 && <span className="text-zinc-600 text-xs line-through font-mono block mb-1">EGP {replacingOrder.shipping_price}</span>}
+                    <input type="number" min="0" className={inputClass} value={replacingShippingPrice} onChange={(e) => setReplacingShippingPrice(e.target.value)} />
+                  </div>
+                )}
                 {replacingVariant && replacingQty && (
                   <div className="bg-purple-500/5 border border-purple-500/20 rounded-lg px-4 py-3">
                     <p className="text-[11px] text-purple-400 uppercase tracking-wider mb-1">New Order</p>
                     <p className="text-white font-semibold">{replacingProduct?.name}</p>
                     <p className="text-xs text-zinc-400 mt-0.5">{replacingColor} · {replacingSize} · ×{replacingQty} · EGP {((replacingProduct?.price || 0) * (parseInt(replacingQty) || 1)).toLocaleString()}</p>
-                    <p className="text-[11px] text-zinc-500 mt-1">Order status stays as-is and continues normally afterward.</p>
                   </div>
                 )}
                 <div className="flex gap-3 pt-2">
                   <button onClick={() => setReplacingOrder(null)} className="flex-1 py-2.5 bg-zinc-900 text-white rounded-lg text-sm font-medium">Cancel</button>
                   <button onClick={handleConfirmReplacing} disabled={!replacingVariant || parseInt(replacingQty) > replacingAvailStock}
-                    className="flex-1 py-2.5 bg-purple-500 hover:bg-purple-600 text-white rounded-lg text-sm font-bold disabled:opacity-40">
-                    Confirm Replace
-                  </button>
+                    className="flex-1 py-2.5 bg-purple-500 hover:bg-purple-600 text-white rounded-lg text-sm font-bold disabled:opacity-40">Confirm Replace</button>
                 </div>
               </div>
             </div>
@@ -842,9 +797,7 @@ export default function OrdersPage() {
                     <div className="flex flex-wrap gap-2">
                       {availableColors.map(c => (
                         <button key={c} type="button" onClick={() => handleColorChange(c)}
-                          className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${formData.color === c ? "bg-white text-black border-white" : "bg-zinc-900 text-zinc-400 border-zinc-800 hover:border-zinc-600"}`}>
-                          {c}
-                        </button>
+                          className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${formData.color === c ? "bg-white text-black border-white" : "bg-zinc-900 text-zinc-400 border-zinc-800 hover:border-zinc-600"}`}>{c}</button>
                       ))}
                     </div>
                   </div>
@@ -858,8 +811,7 @@ export default function OrdersPage() {
                         const v = selectedVariants.find(vv => vv.color === formData.color && vv.size === s);
                         const adjustedStock = v ? v.stock + (editingOrder?.variant_id === v.id && !isInactiveStatus(editingOrder?.status) ? editingOrder?.quantity || 0 : 0) : 0;
                         return (
-                          <button key={s} type="button" onClick={() => handleSizeChange(s)}
-                            disabled={adjustedStock === 0}
+                          <button key={s} type="button" onClick={() => handleSizeChange(s)} disabled={adjustedStock === 0}
                             className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${formData.size === s ? "bg-white text-black border-white" : "bg-zinc-900 text-zinc-400 border-zinc-800 hover:border-zinc-600"} ${adjustedStock === 0 ? "opacity-40 cursor-not-allowed" : ""}`}>
                             {s} <span className="text-[10px] opacity-60">({adjustedStock})</span>
                           </button>
@@ -885,9 +837,10 @@ export default function OrdersPage() {
                   </select>
                 </div>
 
+                {/* Pricing */}
                 <div>
                   <p className="text-xs text-zinc-500 font-medium uppercase tracking-wider mb-2">Pricing</p>
-                  <div className="grid grid-cols-3 gap-3">
+                  <div className="grid grid-cols-2 gap-3">
                     <div>
                       <label className="text-[11px] text-zinc-600 mb-1 block">Total Price</label>
                       <input type="number" min="0" className={inputClass} value={formData.total_price} onChange={(e) => setFormData({ ...formData, total_price: e.target.value })} />
@@ -896,9 +849,84 @@ export default function OrdersPage() {
                       <label className="text-[11px] text-zinc-600 mb-1 block">Shipping</label>
                       <input type="number" min="0" className={inputClass} value={formData.shipping_price} onChange={(e) => setFormData({ ...formData, shipping_price: e.target.value })} />
                     </div>
-                    <div>
-                      <label className="text-[11px] text-zinc-600 mb-1 block">Net Profit</label>
-                      <input type="number" readOnly className="w-full bg-zinc-900/50 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-emerald-400 font-bold focus:outline-none cursor-not-allowed" value={formData.net_profit} />
+                  </div>
+                </div>
+
+                {/* ✅ Deductions Section */}
+                <div className="border border-zinc-800 rounded-xl overflow-hidden">
+                  <div className="px-4 py-3 bg-zinc-900/50 border-b border-zinc-800">
+                    <p className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Deductions</p>
+                  </div>
+                  <div className="p-4 space-y-3">
+
+                    {/* Additional Cost */}
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex-1">
+                        <p className="text-xs text-zinc-300 font-medium">Additional Cost</p>
+                        <p className="text-[10px] text-zinc-600">Packaging, card, perfume, etc.</p>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <input type="number" min="0" value={formData.additional_cost} onChange={(e) => setFormData({ ...formData, additional_cost: e.target.value })}
+                          className="w-20 bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5 text-sm text-white focus:outline-none focus:border-zinc-600 text-center" />
+                        <span className="text-xs text-zinc-500">EGP</span>
+                        {displayAdditional > 0 && <span className="text-xs text-red-400 font-mono w-16 text-right">−{displayAdditional.toFixed(1)}</span>}
+                      </div>
+                    </div>
+
+                    {/* Kashier */}
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex-1">
+                        <p className="text-xs text-zinc-300 font-medium">Kashier Fee</p>
+                        <p className="text-[10px] text-zinc-600">
+                          {isKashierPayment ? 'Applied (credit card / wallet)' : 'Not applied for this payment method'}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <input type="number" min="0" max="100" step="0.1" value={formData.kashier_percent} onChange={(e) => setFormData({ ...formData, kashier_percent: e.target.value })}
+                          className={`w-16 bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5 text-sm text-white focus:outline-none focus:border-zinc-600 text-center ${!isKashierPayment ? 'opacity-40' : ''}`} />
+                        <span className="text-xs text-zinc-500">%</span>
+                        <span className="text-xs text-zinc-500">+</span>
+                        <input type="number" min="0" value={formData.kashier_fixed} onChange={(e) => setFormData({ ...formData, kashier_fixed: e.target.value })}
+                          className={`w-16 bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5 text-sm text-white focus:outline-none focus:border-zinc-600 text-center ${!isKashierPayment ? 'opacity-40' : ''}`} />
+                        <span className="text-xs text-zinc-500">EGP</span>
+                        {isKashierPayment && displayKashier > 0 && <span className="text-xs text-red-400 font-mono w-16 text-right">−{displayKashier.toFixed(1)}</span>}
+                      </div>
+                    </div>
+
+                    {/* Ads */}
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex-1">
+                        <p className="text-xs text-zinc-300 font-medium">Ads</p>
+                        <p className="text-[10px] text-zinc-600">% من الـ Gross Profit</p>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <input type="number" min="0" max="100" step="0.1" value={formData.ads_percent} onChange={(e) => setFormData({ ...formData, ads_percent: e.target.value })}
+                          className="w-16 bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5 text-sm text-white focus:outline-none focus:border-zinc-600 text-center" />
+                        <span className="text-xs text-zinc-500">%</span>
+                        {displayAds > 0 && <span className="text-xs text-red-400 font-mono w-16 text-right">−{displayAds.toFixed(1)}</span>}
+                      </div>
+                    </div>
+
+                    {/* Returns */}
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex-1">
+                        <p className="text-xs text-zinc-300 font-medium">Returns Provision</p>
+                        <p className="text-[10px] text-zinc-600">% من الـ Gross Profit</p>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <input type="number" min="0" max="100" step="0.1" value={formData.returns_percent} onChange={(e) => setFormData({ ...formData, returns_percent: e.target.value })}
+                          className="w-16 bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5 text-sm text-white focus:outline-none focus:border-zinc-600 text-center" />
+                        <span className="text-xs text-zinc-500">%</span>
+                        {displayReturns > 0 && <span className="text-xs text-red-400 font-mono w-16 text-right">−{displayReturns.toFixed(1)}</span>}
+                      </div>
+                    </div>
+
+                    {/* Net Profit Result */}
+                    <div className="border-t border-zinc-800 pt-3 flex items-center justify-between">
+                      <p className="text-sm font-bold text-white">Net Profit</p>
+                      <p className={`text-lg font-black font-mono ${parseFloat(formData.net_profit) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                        EGP {parseFloat(formData.net_profit).toLocaleString()}
+                      </p>
                     </div>
                   </div>
                 </div>
@@ -908,18 +936,14 @@ export default function OrdersPage() {
                   <div className="grid grid-cols-2 gap-2">
                     {payments.map(p => (
                       <button key={p} type="button" onClick={() => setFormData({ ...formData, payment_method: p })}
-                        className={`py-2 px-3 rounded-lg text-xs font-medium text-left capitalize transition-colors border ${formData.payment_method === p ? "bg-white text-black border-white" : "bg-zinc-900 text-zinc-400 border-zinc-800 hover:border-zinc-600"}`}>
-                        {p}
-                      </button>
+                        className={`py-2 px-3 rounded-lg text-xs font-medium text-left capitalize transition-colors border ${formData.payment_method === p ? "bg-white text-black border-white" : "bg-zinc-900 text-zinc-400 border-zinc-800 hover:border-zinc-600"}`}>{p}</button>
                     ))}
                   </div>
                 </div>
 
                 <div>
                   <p className="text-xs text-zinc-500 font-medium uppercase tracking-wider mb-2">Status</p>
-                  {editingOrder?.was_replaced && (
-                    <p className="text-[11px] text-purple-400 mb-2">This order was previously replaced — it keeps moving through its normal status.</p>
-                  )}
+                  {editingOrder?.was_replaced && <p className="text-[11px] text-purple-400 mb-2">This order was previously replaced.</p>}
                   <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                     {statuses.map(s => (
                       <button key={s} type="button" onClick={() => {

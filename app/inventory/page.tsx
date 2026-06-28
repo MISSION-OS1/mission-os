@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import DashboardLayout from '@/components/DashboardLayout';
 
@@ -12,6 +13,7 @@ interface Variant {
   color: string;
   size: string;
   stock: number;
+  total_added: number;
   product_name?: string;
   product_category?: string;
   product_cost?: number;
@@ -19,6 +21,8 @@ interface Variant {
 }
 
 export default function InventoryPage() {
+  const router = useRouter();
+  const [dropId, setDropId] = useState<number | null>(null);
   const [variants, setVariants] = useState<Variant[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -27,34 +31,65 @@ export default function InventoryPage() {
   const [restockModal, setRestockModal] = useState<Variant | null>(null);
   const [restockQty, setRestockQty] = useState('');
 
+  // ✅ نقرأ الـ Drop المختار من localStorage
+  useEffect(() => {
+    const savedDropId = localStorage.getItem('selectedDropId');
+    if (!savedDropId) {
+      router.replace('/drops');
+      return;
+    }
+    setDropId(parseInt(savedDropId));
+  }, [router]);
+
   const fetchData = async () => {
+    if (!dropId) return;
     setLoading(true);
-    const { data } = await supabase
+
+    // ✅ بنجيب الـ products بتاعة الـ Drop الأول، وبعدين الـ variants بتاعتهم
+    const { data: productsData } = await supabase
+      .from('products')
+      .select('id, name, category, cost, price')
+      .eq('drop_id', dropId);
+
+    if (!productsData || productsData.length === 0) {
+      setVariants([]);
+      setLoading(false);
+      return;
+    }
+
+    const productIds = productsData.map(p => p.id);
+    const { data: variantsData } = await supabase
       .from('product_variants')
-      .select('*, products(name, category, cost, price)')
+      .select('*')
+      .in('product_id', productIds)
       .order('product_id');
 
-    if (data) {
-      setVariants(data.map((v: any) => ({
-        ...v,
-        product_name: v.products?.name,
-        product_category: v.products?.category,
-        product_cost: v.products?.cost,
-        product_price: v.products?.price,
-      })));
+    if (variantsData) {
+      setVariants(variantsData.map((v: any) => {
+        const product = productsData.find(p => p.id === v.product_id);
+        return {
+          ...v,
+          product_name: product?.name,
+          product_category: product?.category,
+          product_cost: product?.cost,
+          product_price: product?.price,
+        };
+      }));
     }
     setLoading(false);
   };
 
-  useEffect(() => { fetchData(); }, []);
+  useEffect(() => { if (dropId) fetchData(); }, [dropId]);
 
   const handleRestock = async () => {
     if (!restockModal) return;
     const qty = parseInt(restockQty);
     if (isNaN(qty) || qty <= 0) return;
     const newStock = restockModal.stock + qty;
-    await supabase.from('product_variants').update({ stock: newStock }).eq('id', restockModal.id);
-    // حدث الـ stock الكلي في products
+    const newTotalAdded = (restockModal.total_added || 0) + qty; // ✅ رأس المال بيتزود بس، ما بيقلش
+
+    await supabase.from('product_variants').update({ stock: newStock, total_added: newTotalAdded }).eq('id', restockModal.id);
+
     const productVariants = variants.filter(v => v.product_id === restockModal.product_id);
     const newTotal = productVariants.reduce((s, v) => s + (v.id === restockModal.id ? newStock : v.stock), 0);
     await supabase.from('products').update({ stock: newTotal }).eq('id', restockModal.product_id);
@@ -63,7 +98,6 @@ export default function InventoryPage() {
     fetchData();
   };
 
-  // تجميع الـ variants حسب المنتج
   const productIds = [...new Set(variants.map(v => v.product_id))];
   const groupedByProduct = productIds.map(pid => {
     const pvs = variants.filter(v => v.product_id === pid);
@@ -74,6 +108,7 @@ export default function InventoryPage() {
       product_cost: pvs[0]?.product_cost || 0,
       product_price: pvs[0]?.product_price || 0,
       totalStock: pvs.reduce((s, v) => s + v.stock, 0),
+      totalAdded: pvs.reduce((s, v) => s + (v.total_added || 0), 0), // ✅
       variants: pvs,
     };
   });
@@ -85,7 +120,10 @@ export default function InventoryPage() {
   });
 
   const totalItemsInStock  = variants.reduce((s, v) => s + v.stock, 0);
-  const totalInventoryCost = variants.reduce((s, v) => s + (v.stock * (v.product_cost || 0)), 0);
+  // ✅ Capital Invested: ثابت طول الوقت، بيتغير بس لما تضيف منتج جديد أو تعمل restock
+  const capitalInvested    = variants.reduce((s, v) => s + ((v.total_added || 0) * (v.product_cost || 0)), 0);
+  // قيمة المخزون المتبقي: ده اللي كان قبل كده اسمه "Inventory Cost"، طبيعي يقل مع البيع
+  const remainingValue     = variants.reduce((s, v) => s + (v.stock * (v.product_cost || 0)), 0);
   const potentialRevenue   = variants.reduce((s, v) => s + (v.stock * (v.product_price || 0)), 0);
   const lowStockAlerts     = groupedByProduct.filter(p => p.totalStock <= 5).length;
 
@@ -97,6 +135,8 @@ export default function InventoryPage() {
 
   const colors = (pvs: Variant[]) => [...new Set(pvs.map(v => v.color))];
 
+  if (!dropId) return null;
+
   return (
     <DashboardLayout>
       <div className="space-y-6">
@@ -107,14 +147,22 @@ export default function InventoryPage() {
         </div>
 
         {/* Stats */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
           <div className="bg-[#09090b] border border-zinc-800 rounded-xl p-4">
             <p className="text-[10px] font-semibold text-zinc-500 uppercase">Total in Stock</p>
             <p className="text-xl font-bold text-white font-mono mt-1">{totalItemsInStock} <span className="text-xs text-zinc-500 font-sans">pcs</span></p>
           </div>
+          {/* ✅ Capital Invested - رقم ثابت، رأس المال اللي دفعته فعلياً */}
           <div className="bg-[#09090b] border border-zinc-800 rounded-xl p-4">
-            <p className="text-[10px] font-semibold text-zinc-500 uppercase">Inventory Cost</p>
-            <p className="text-xl font-bold text-white font-mono mt-1">EGP {totalInventoryCost.toLocaleString()}</p>
+            <p className="text-[10px] font-semibold text-zinc-500 uppercase">Capital Invested</p>
+            <p className="text-xl font-bold text-white font-mono mt-1">EGP {capitalInvested.toLocaleString()}</p>
+            <p className="text-[10px] text-zinc-600 mt-0.5">Fixed — total ever added</p>
+          </div>
+          {/* قيمة المخزون المتبقي - بيقل طبيعي مع البيع */}
+          <div className="bg-[#09090b] border border-zinc-800 rounded-xl p-4">
+            <p className="text-[10px] font-semibold text-zinc-500 uppercase">Remaining Stock Value</p>
+            <p className="text-xl font-bold text-zinc-300 font-mono mt-1">EGP {remainingValue.toLocaleString()}</p>
+            <p className="text-[10px] text-zinc-600 mt-0.5">Decreases as you sell</p>
           </div>
           <div className="bg-[#09090b] border border-zinc-800 rounded-xl p-4">
             <p className="text-[10px] font-semibold text-zinc-500 uppercase">Potential Revenue</p>
@@ -152,7 +200,7 @@ export default function InventoryPage() {
                     <th className="p-4">Category</th>
                     <th className="p-4 text-center">Total Stock</th>
                     <th className="p-4 text-right">Cost/Unit</th>
-                    <th className="p-4 text-right">Asset Value</th>
+                    <th className="p-4 text-right">Remaining Value</th>
                     <th className="p-4 text-right">Actions</th>
                   </tr>
                 </thead>
@@ -230,7 +278,7 @@ export default function InventoryPage() {
                       <p className="text-sm font-mono text-zinc-400 mt-0.5">EGP {p.product_cost}</p>
                     </div>
                     <div>
-                      <p className="text-[10px] text-zinc-600 uppercase">Asset Value</p>
+                      <p className="text-[10px] text-zinc-600 uppercase">Remaining Value</p>
                       <p className="text-sm font-mono text-white mt-0.5">EGP {(p.totalStock * p.product_cost).toLocaleString()}</p>
                     </div>
                   </div>
@@ -283,7 +331,10 @@ export default function InventoryPage() {
                 onChange={(e) => setRestockQty(e.target.value)} autoFocus
                 className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-zinc-600" />
               {restockQty && parseInt(restockQty) > 0 && (
-                <p className="text-xs text-emerald-400">New stock: {restockModal.stock + parseInt(restockQty)} pcs</p>
+                <div className="space-y-1">
+                  <p className="text-xs text-emerald-400">New stock: {restockModal.stock + parseInt(restockQty)} pcs</p>
+                  <p className="text-[11px] text-zinc-500">This will add EGP {((restockModal.product_cost || 0) * parseInt(restockQty)).toLocaleString()} to Capital Invested</p>
+                </div>
               )}
               <div className="flex gap-3">
                 <button onClick={() => setRestockModal(null)} className="flex-1 py-2.5 bg-zinc-900 hover:bg-zinc-800 text-white rounded-lg text-sm font-medium">Cancel</button>

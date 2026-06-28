@@ -27,13 +27,16 @@ export default function DropsPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formData, setFormData] = useState({ name: '', description: '' });
 
+  // ===== Delete Drop State =====
+  const [deletingDrop, setDeletingDrop] = useState<Drop | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+
   const fetchDrops = async () => {
     setLoading(true);
     const { data: dropsData } = await supabase.from('drops').select('*').order('id', { ascending: false });
     if (dropsData) {
       setDrops(dropsData);
 
-      // هنحسب إحصائيات بسيطة لكل Drop
       const statsMap: Record<number, DropStats> = {};
       for (const drop of dropsData) {
         const [{ count: productCount }, { data: ordersData }] = await Promise.all([
@@ -67,9 +70,30 @@ export default function DropsPage() {
   };
 
   const enterDrop = (dropId: number) => {
-    // بنخزن الـ Drop المختار محلياً عشان كل الصفحات تقدر تقرأه
     localStorage.setItem('selectedDropId', dropId.toString());
     router.push('/dashboard');
+  };
+
+  // ===== Delete Drop =====
+  const isDropEmpty = (dropId: number) => {
+    const s = stats[dropId];
+    return s && s.productCount === 0 && s.orderCount === 0;
+  };
+
+  const confirmDeleteDrop = async () => {
+    if (!deletingDrop) return;
+    setIsDeleting(true);
+    await supabase.from('drops').delete().eq('id', deletingDrop.id);
+
+    // لو الـ Drop المحذوف هو نفسه المختار حالياً، نشيله من localStorage
+    const savedDropId = localStorage.getItem('selectedDropId');
+    if (savedDropId && parseInt(savedDropId) === deletingDrop.id) {
+      localStorage.removeItem('selectedDropId');
+    }
+
+    setDeletingDrop(null);
+    setIsDeleting(false);
+    fetchDrops();
   };
 
   const inputClass = "w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-zinc-600 transition-colors";
@@ -98,37 +122,48 @@ export default function DropsPage() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {drops.map((drop) => {
               const s = stats[drop.id] || { productCount: 0, orderCount: 0, revenue: 0 };
+              const empty = isDropEmpty(drop.id);
               return (
-                <button
-                  key={drop.id}
-                  onClick={() => enterDrop(drop.id)}
-                  className="text-left bg-[#09090b] border border-zinc-800 rounded-xl p-5 hover:border-zinc-600 transition-colors space-y-4 group"
-                >
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <h3 className="font-bold text-white text-lg group-hover:text-zinc-200">{drop.name}</h3>
-                      {drop.description && <p className="text-xs text-zinc-500 mt-1">{drop.description}</p>}
+                <div key={drop.id} className="bg-[#09090b] border border-zinc-800 rounded-xl p-5 hover:border-zinc-600 transition-colors space-y-4 group relative">
+                  <button onClick={() => enterDrop(drop.id)} className="text-left w-full">
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <h3 className="font-bold text-white text-lg group-hover:text-zinc-200">{drop.name}</h3>
+                        {drop.description && <p className="text-xs text-zinc-500 mt-1">{drop.description}</p>}
+                      </div>
+                      <span className={`px-2 py-0.5 rounded-md text-[10px] font-medium uppercase tracking-wide ${
+                        drop.status === 'active' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-zinc-800 text-zinc-500 border border-zinc-700'
+                      }`}>{drop.status}</span>
                     </div>
-                    <span className={`px-2 py-0.5 rounded-md text-[10px] font-medium uppercase tracking-wide ${
-                      drop.status === 'active' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-zinc-800 text-zinc-500 border border-zinc-700'
-                    }`}>{drop.status}</span>
-                  </div>
 
-                  <div className="grid grid-cols-3 gap-2 pt-3 border-t border-zinc-800">
-                    <div>
-                      <p className="text-[10px] text-zinc-600 uppercase">Products</p>
-                      <p className="text-sm font-bold text-white mt-0.5">{s.productCount}</p>
+                    <div className="grid grid-cols-3 gap-2 pt-3 mt-3 border-t border-zinc-800">
+                      <div>
+                        <p className="text-[10px] text-zinc-600 uppercase">Products</p>
+                        <p className="text-sm font-bold text-white mt-0.5">{s.productCount}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] text-zinc-600 uppercase">Orders</p>
+                        <p className="text-sm font-bold text-white mt-0.5">{s.orderCount}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] text-zinc-600 uppercase">Revenue</p>
+                        <p className="text-sm font-bold text-emerald-400 mt-0.5 font-mono">{s.revenue.toLocaleString()}</p>
+                      </div>
                     </div>
-                    <div>
-                      <p className="text-[10px] text-zinc-600 uppercase">Orders</p>
-                      <p className="text-sm font-bold text-white mt-0.5">{s.orderCount}</p>
-                    </div>
-                    <div>
-                      <p className="text-[10px] text-zinc-600 uppercase">Revenue</p>
-                      <p className="text-sm font-bold text-emerald-400 mt-0.5 font-mono">{s.revenue.toLocaleString()}</p>
-                    </div>
-                  </div>
-                </button>
+                  </button>
+
+                  {/* ✅ زرار Delete — يظهر بس لما الـ Drop فاضي تماماً */}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setDeletingDrop(drop); }}
+                    className={`w-full py-1.5 text-xs font-medium rounded-lg transition-colors border ${
+                      empty
+                        ? 'bg-red-500/10 hover:bg-red-500/20 text-red-400 border-red-500/20'
+                        : 'bg-zinc-900/50 text-zinc-600 border-zinc-800 cursor-not-allowed'
+                    }`}
+                  >
+                    {empty ? '🗑️ Delete Drop' : '🔒 Not empty — can\'t delete'}
+                  </button>
+                </div>
               );
             })}
           </div>
@@ -159,6 +194,22 @@ export default function DropsPage() {
                 </button>
               </div>
             </form>
+          </div>
+        )}
+
+        {/* Delete Confirm Modal */}
+        {deletingDrop && (
+          <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
+            <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-6 w-full max-w-sm space-y-4">
+              <h2 className="text-lg font-bold text-white">Delete "{deletingDrop.name}"?</h2>
+              <p className="text-sm text-zinc-400">This drop is empty (no products or orders), so it's safe to delete. This action cannot be undone.</p>
+              <div className="flex gap-3">
+                <button onClick={() => setDeletingDrop(null)} className="flex-1 py-2.5 bg-zinc-900 hover:bg-zinc-800 text-white rounded-lg text-sm font-medium">Cancel</button>
+                <button onClick={confirmDeleteDrop} disabled={isDeleting} className="flex-1 py-2.5 bg-red-500 hover:bg-red-600 text-white rounded-lg text-sm font-bold disabled:opacity-50">
+                  {isDeleting ? 'Deleting...' : 'Delete'}
+                </button>
+              </div>
+            </div>
           </div>
         )}
       </div>

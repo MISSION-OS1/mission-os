@@ -10,6 +10,7 @@ export interface VariantRow {
   color: string;
   size: string;
   stock: number;
+  total_added?: number; // رأس المال المستثمر — لا يتغير من هنا، يتغير بس من Inventory restock
 }
 
 interface Props {

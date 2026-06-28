@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import DashboardLayout from '@/components/DashboardLayout';
 import VariantEditor, { VariantRow } from '@/components/VariantEditor';
@@ -20,6 +21,8 @@ interface Product {
 const inputClass = "w-full bg-[#121214] border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-zinc-600 transition-colors";
 
 export default function ProductsPage() {
+  const router = useRouter();
+  const [dropId, setDropId] = useState<number | null>(null);
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
@@ -33,33 +36,46 @@ export default function ProductsPage() {
   const [formData, setFormData] = useState(emptyForm);
   const [variants, setVariants] = useState<VariantRow[]>([]);
 
+  // ✅ نقرأ الـ Drop المختار من localStorage
+  useEffect(() => {
+    const savedDropId = localStorage.getItem('selectedDropId');
+    if (!savedDropId) {
+      router.replace('/drops');
+      return;
+    }
+    setDropId(parseInt(savedDropId));
+  }, [router]);
+
   const fetchProducts = async () => {
+    if (!dropId) return;
     setLoading(true);
     const { data } = await supabase
       .from('products')
       .select('*, product_variants(*)')
+      .eq('drop_id', dropId)
       .order('id', { ascending: false });
     if (data) setProducts(data.map(p => ({ ...p, variants: p.product_variants || [] })));
     setLoading(false);
   };
 
-  useEffect(() => { fetchProducts(); }, []);
+  useEffect(() => { if (dropId) fetchProducts(); }, [dropId]);
 
   const getColors = (vars: VariantRow[]) => [...new Set(vars.map(v => v.color))];
   const totalStock = (vars: VariantRow[]) => vars.reduce((s, v) => s + v.stock, 0);
 
   const handleAddSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!dropId) return;
     if (variants.length === 0) { alert('Please add at least one color.'); return; }
     setIsSubmitting(true);
 
     const { data: product, error } = await supabase
       .from('products')
-      .insert([{ name: formData.name, price: parseFloat(formData.price), cost: parseFloat(formData.cost), category: formData.category, stock: 0, sales_count: 0 }])
+      .insert([{ name: formData.name, price: parseFloat(formData.price), cost: parseFloat(formData.cost), category: formData.category, stock: 0, sales_count: 0, drop_id: dropId }])
       .select().single();
 
     if (!error && product) {
-      await supabase.from('product_variants').insert(variants.map(v => ({ product_id: product.id, color: v.color, size: v.size, stock: v.stock })));
+      await supabase.from('product_variants').insert(variants.map(v => ({ product_id: product.id, color: v.color, size: v.size, stock: v.stock, total_added: v.stock })));
       await supabase.from('products').update({ stock: variants.reduce((s, v) => s + v.stock, 0) }).eq('id', product.id);
     }
 
@@ -72,7 +88,7 @@ export default function ProductsPage() {
 
   const openEditModal = (product: Product) => {
     setEditingProduct(product);
-    setVariants(product.variants?.map(v => ({ id: v.id, color: v.color, size: v.size, stock: v.stock })) || []);
+    setVariants(product.variants?.map(v => ({ id: v.id, color: v.color, size: v.size, stock: v.stock, total_added: v.total_added })) || []);
     setIsEditModalOpen(true);
   };
 
@@ -88,8 +104,23 @@ export default function ProductsPage() {
       category: editingProduct.category,
     }).eq('id', editingProduct.id);
 
+    // ✅ تعديل الـ stock يدوياً من هنا (سواء زيادة أو نقصان) معناه إنك بتصحح رأس المال فعلياً
+    // فالـ total_added بيتحرك بنفس قد الفرق اللي عملته. البيع (من الأوردرات) ما بيلمسش الرقم ده خالص
+    const oldVariants = editingProduct.variants || [];
+
     await supabase.from('product_variants').delete().eq('product_id', editingProduct.id);
-    await supabase.from('product_variants').insert(variants.map(v => ({ product_id: editingProduct.id, color: v.color, size: v.size, stock: v.stock })));
+    await supabase.from('product_variants').insert(variants.map(v => {
+      const oldMatch = oldVariants.find(ov => ov.color === v.color && ov.size === v.size);
+      if (oldMatch) {
+        const oldStock = oldMatch.stock;
+        const oldTotalAdded = oldMatch.total_added ?? oldMatch.stock;
+        const delta = v.stock - oldStock; // الفرق اللي عملته يدوياً
+        const newTotalAdded = Math.max(0, oldTotalAdded + delta);
+        return { product_id: editingProduct.id, color: v.color, size: v.size, stock: v.stock, total_added: newTotalAdded };
+      }
+      // variant جديد كامل (لون جديد مثلاً) — رأس ماله = الكمية اللي كتبتها أول مرة
+      return { product_id: editingProduct.id, color: v.color, size: v.size, stock: v.stock, total_added: v.stock };
+    }));
     await supabase.from('products').update({ stock: variants.reduce((s, v) => s + v.stock, 0) }).eq('id', editingProduct.id);
 
     setIsEditModalOpen(false);
@@ -104,6 +135,8 @@ export default function ProductsPage() {
     setDeleteConfirmId(null);
     fetchProducts();
   };
+
+  if (!dropId) return null;
 
   return (
     <DashboardLayout>
@@ -227,8 +260,8 @@ export default function ProductsPage() {
                                 className="text-zinc-400 hover:text-white text-xs border border-zinc-800 bg-zinc-950 px-2 py-1 rounded-md transition-colors">
                                 {expandedProduct === product.id ? '▲ Hide' : '▼ Variants'}
                               </button>
-                              <button onClick={() => openEditModal(product)} className="text-zinc-400 hover:text-white text-xs border border-zinc-800 bg-zinc-950 px-2 py-1 rounded-md transition-colors">Edit 📝</button>
-                              <button onClick={() => setDeleteConfirmId(product.id)} className="text-red-400 hover:text-red-300 text-xs border border-red-500/10 bg-red-500/5 px-2 py-1 rounded-md transition-colors">Delete 🗑️</button>
+                              <button onClick={() => openEditModal(product)} className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs rounded-lg font-medium transition-colors">Edit </button>
+                              <button onClick={() => setDeleteConfirmId(product.id)} className="px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs rounded-lg transition-colors font-medium">Delete </button>
                             </div>
                           </td>
                         </tr>

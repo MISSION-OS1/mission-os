@@ -1,12 +1,16 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import DashboardLayout from '@/components/DashboardLayout';
 
 interface OrderEntry {
   status: string;
   total_price: number;
+  net_profit: number;
+  shipping_price: number;
+  flyer_cost: number;
   created_at: string;
   payment_method: string;
   product: string;
@@ -31,6 +35,9 @@ interface CustomerSummary {
   latestReplacedProduct?: string;
   latestReplacedColor?: string;
   latestReplacedSize?: string;
+  latestNetProfit: number;
+  latestShippingPrice: number;
+  latestFlyerCost: number;
   orders: OrderEntry[];
 }
 
@@ -44,17 +51,27 @@ const statusStyle = (s: string) => ({
 const replacedBadge = "px-2 py-0.5 rounded-md text-[10px] font-medium uppercase tracking-wide bg-purple-500/10 text-purple-400 border border-purple-500/20";
 
 export default function CustomersPage() {
+  const router = useRouter();
+  const [dropId, setDropId] = useState<number | null>(null);
   const [customers, setCustomers] = useState<CustomerSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [expandedCustomer, setExpandedCustomer] = useState<string | null>(null);
 
   useEffect(() => {
+    const savedDropId = localStorage.getItem('selectedDropId');
+    if (!savedDropId) { router.replace('/drops'); return; }
+    setDropId(parseInt(savedDropId));
+  }, [router]);
+
+  useEffect(() => {
+    if (!dropId) return;
     const fetchCustomersData = async () => {
       setLoading(true);
       const { data: ordersData } = await supabase
         .from('orders')
-        .select('customer_name, customer_phone, payment_method, total_price, created_at, status, product, color, size, quantity, was_replaced, replaced_product, replaced_color, replaced_size')
+        .select('customer_name, customer_phone, payment_method, total_price, net_profit, shipping_price, flyer_cost, created_at, status, product, color, size, quantity, was_replaced, replaced_product, replaced_color, replaced_size')
+        .eq('drop_id', dropId)
         .order('created_at', { ascending: false });
 
       if (ordersData) {
@@ -71,7 +88,11 @@ export default function CustomersPage() {
             ? new Date(order.created_at).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
             : 'N/A';
           const entry: OrderEntry = {
-            status, total_price: price, created_at: date, payment_method: paymentMethod,
+            status, total_price: price,
+            net_profit: order.net_profit || 0,
+            shipping_price: order.shipping_price || 0,
+            flyer_cost: order.flyer_cost || 0,
+            created_at: date, payment_method: paymentMethod,
             product: order.product || '', color: order.color || '', size: order.size || '',
             quantity: order.quantity || 1, was_replaced: wasReplaced,
             replaced_product: order.replaced_product || undefined,
@@ -92,6 +113,9 @@ export default function CustomersPage() {
               customerMap[name].latestReplacedSize = entry.replaced_size;
               customerMap[name].paymentMethod = paymentMethod;
               customerMap[name].phone = phone;
+              customerMap[name].latestNetProfit = entry.net_profit;
+              customerMap[name].latestShippingPrice = entry.shipping_price;
+              customerMap[name].latestFlyerCost = entry.flyer_cost;
             }
           } else {
             customerMap[name] = {
@@ -100,6 +124,9 @@ export default function CustomersPage() {
               latestReplacedProduct: entry.replaced_product,
               latestReplacedColor: entry.replaced_color,
               latestReplacedSize: entry.replaced_size,
+              latestNetProfit: entry.net_profit,
+              latestShippingPrice: entry.shipping_price,
+              latestFlyerCost: entry.flyer_cost,
               orders: [entry],
             };
           }
@@ -109,17 +136,29 @@ export default function CustomersPage() {
       setLoading(false);
     };
     fetchCustomersData();
-  }, []);
+  }, [dropId]);
 
   const filteredCustomers = customers.filter((c) =>
     c.name.toLowerCase().includes(searchTerm.toLowerCase()) || c.phone.includes(searchTerm)
   );
 
   const variantLabel = (o: OrderEntry) => [o.color, o.size].filter(Boolean).join(' · ');
-
-  // عرض المنتج القديم كامل (اسم + لون + مقاس) قدام المنتج الجديد كامل دايماً
   const replacementLabel = (full: { product?: string; color?: string; size?: string }) =>
     [full.product, full.color, full.size].filter(Boolean).join(' · ');
+
+  const profitDisplay = (o: Pick<OrderEntry, 'status' | 'net_profit' | 'shipping_price' | 'flyer_cost'>) => {
+    if (o.status?.toLowerCase() === 'canceled') {
+      const loss = (o.shipping_price || 0) + (o.flyer_cost || 0);
+      return { value: `− EGP ${loss.toLocaleString()}`, color: 'text-red-400', label: 'Loss' };
+    }
+    return {
+      value: `EGP ${(o.net_profit || 0).toLocaleString()}`,
+      color: (o.net_profit || 0) >= 0 ? 'text-emerald-400' : 'text-red-400',
+      label: 'Net Profit',
+    };
+  };
+
+  if (!dropId) return null;
 
   return (
     <DashboardLayout>
@@ -143,91 +182,111 @@ export default function CustomersPage() {
           <>
             {/* Mobile */}
             <div className="flex flex-col gap-3 md:hidden">
-              {filteredCustomers.map((customer, index) => (
-                <div key={index} className="bg-[#09090b] border border-zinc-800 rounded-xl p-4 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <div className="w-9 h-9 bg-zinc-900 border border-zinc-800 rounded-full flex items-center justify-center text-xs text-zinc-400 uppercase font-bold shrink-0">
-                        {customer.name.charAt(0)}
+              {filteredCustomers.map((customer, index) => {
+                const latestPd = profitDisplay({
+                  status: customer.latestStatus,
+                  net_profit: customer.latestNetProfit,
+                  shipping_price: customer.latestShippingPrice,
+                  flyer_cost: customer.latestFlyerCost,
+                });
+                return (
+                  <div key={index} className="bg-[#09090b] border border-zinc-800 rounded-xl p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="w-9 h-9 bg-zinc-900 border border-zinc-800 rounded-full flex items-center justify-center text-xs text-zinc-400 uppercase font-bold shrink-0">
+                          {customer.name.charAt(0)}
+                        </div>
+                        <div>
+                          <p className="font-semibold text-white text-sm">{customer.name}</p>
+                          <p className="text-xs text-zinc-500 font-mono">{customer.phone}</p>
+                        </div>
                       </div>
-                      <div>
-                        <p className="font-semibold text-white text-sm">{customer.name}</p>
-                        <p className="text-xs text-zinc-500 font-mono">{customer.phone}</p>
+                      <div className="flex items-center gap-1.5">
+                        {customer.latestWasReplaced && <span className={replacedBadge}>Replaced</span>}
+                        <span className={`px-2 py-1 rounded-md text-[11px] font-medium uppercase tracking-wide ${statusStyle(customer.latestStatus)}`}>{customer.latestStatus}</span>
                       </div>
                     </div>
-                    <div className="flex items-center gap-1.5">
-                      {customer.latestWasReplaced && <span className={replacedBadge}>Replaced</span>}
-                      <span className={`px-2 py-1 rounded-md text-[11px] font-medium uppercase tracking-wide ${statusStyle(customer.latestStatus)}`}>{customer.latestStatus}</span>
-                    </div>
-                  </div>
 
-                  {/* أحدث طلب */}
-                  {customer.orders[0] && (
-                    <div className="bg-zinc-900/40 border border-zinc-800/60 rounded-lg px-3 py-2 space-y-1">
-                      {customer.latestWasReplaced && (
-                        <p className="text-[11px] text-zinc-600 line-through">
-                          {replacementLabel({ product: customer.latestReplacedProduct, color: customer.latestReplacedColor, size: customer.latestReplacedSize })}
-                        </p>
+                    {customer.orders[0] && (
+                      <div className="bg-zinc-900/40 border border-zinc-800/60 rounded-lg px-3 py-2 space-y-1">
+                        {customer.latestWasReplaced && (
+                          <p className="text-[11px] text-zinc-600 line-through">
+                            {replacementLabel({ product: customer.latestReplacedProduct, color: customer.latestReplacedColor, size: customer.latestReplacedSize })}
+                          </p>
+                        )}
+                        <p className="text-xs text-zinc-300">{customer.orders[0].product}</p>
+                        {variantLabel(customer.orders[0]) && (
+                          <p className="text-[11px] text-zinc-500 mt-0.5">{variantLabel(customer.orders[0])} · ×{customer.orders[0].quantity}</p>
+                        )}
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-3 gap-2 border-t border-zinc-800 pt-3">
+                      <div className="text-center">
+                        <p className="text-[10px] text-zinc-600 uppercase">Orders</p>
+                        <p className="text-sm font-bold text-white mt-0.5">{customer.totalOrders}</p>
+                      </div>
+                      <div className="text-center">
+                        <p className="text-[10px] text-zinc-600 uppercase">Spent</p>
+                        <p className="text-sm font-bold text-white mt-0.5 font-mono">EGP {customer.totalSpent.toLocaleString()}</p>
+                      </div>
+                      <div className="text-center">
+                        <p className="text-[10px] text-zinc-600 uppercase">Payment</p>
+                        <p className="text-xs text-zinc-400 mt-0.5 capitalize truncate">{customer.paymentMethod}</p>
+                      </div>
+                    </div>
+
+                    {/* Net Profit row - Mobile */}
+                    <div className="flex items-center justify-between border-t border-zinc-800 pt-2">
+                      <p className="text-[10px] text-zinc-600 uppercase">{latestPd.label} (Latest)</p>
+                      <span className={`font-mono font-bold text-sm ${latestPd.color}`}>{latestPd.value}</span>
+                    </div>
+
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs text-zinc-600">Last order: {customer.lastOrderDate}</p>
+                      {customer.totalOrders > 1 && (
+                        <button onClick={() => setExpandedCustomer(expandedCustomer === customer.name ? null : customer.name)}
+                          className="text-xs text-zinc-500 hover:text-white border border-zinc-800 bg-zinc-900 px-2.5 py-1 rounded-lg transition-colors">
+                          {expandedCustomer === customer.name ? '▲ Hide' : `▼ ${customer.totalOrders} orders`}
+                        </button>
                       )}
-                      <p className="text-xs text-zinc-300">{customer.orders[0].product}</p>
-                      {variantLabel(customer.orders[0]) && (
-                        <p className="text-[11px] text-zinc-500 mt-0.5">{variantLabel(customer.orders[0])} · ×{customer.orders[0].quantity}</p>
-                      )}
                     </div>
-                  )}
 
-                  <div className="grid grid-cols-3 gap-2 border-t border-zinc-800 pt-3">
-                    <div className="text-center">
-                      <p className="text-[10px] text-zinc-600 uppercase">Orders</p>
-                      <p className="text-sm font-bold text-white mt-0.5">{customer.totalOrders}</p>
-                    </div>
-                    <div className="text-center">
-                      <p className="text-[10px] text-zinc-600 uppercase">Spent</p>
-                      <p className="text-sm font-bold text-white mt-0.5 font-mono">EGP {customer.totalSpent.toLocaleString()}</p>
-                    </div>
-                    <div className="text-center">
-                      <p className="text-[10px] text-zinc-600 uppercase">Payment</p>
-                      <p className="text-xs text-zinc-400 mt-0.5 capitalize truncate">{customer.paymentMethod}</p>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center justify-between">
-                    <p className="text-xs text-zinc-600">Last order: {customer.lastOrderDate}</p>
-                    {customer.totalOrders > 1 && (
-                      <button onClick={() => setExpandedCustomer(expandedCustomer === customer.name ? null : customer.name)}
-                        className="text-xs text-zinc-500 hover:text-white border border-zinc-800 bg-zinc-900 px-2.5 py-1 rounded-lg transition-colors">
-                        {expandedCustomer === customer.name ? '▲ Hide' : `▼ ${customer.totalOrders} orders`}
-                      </button>
+                    {expandedCustomer === customer.name && (
+                      <div className="border-t border-zinc-800 pt-3 space-y-2">
+                        <p className="text-[11px] text-zinc-500 uppercase tracking-wider font-semibold">Order History</p>
+                        {customer.orders.map((o, i) => {
+                          const pd = profitDisplay(o);
+                          return (
+                            <div key={i} className="bg-zinc-900/60 border border-zinc-800/60 rounded-lg px-3 py-2 space-y-1">
+                              <div className="flex items-center justify-between text-xs">
+                                <span className="text-zinc-500">{o.created_at}</span>
+                                <div className="flex items-center gap-1.5">
+                                  {o.was_replaced && <span className={replacedBadge}>Replaced</span>}
+                                  <span className={`px-2 py-0.5 rounded text-[10px] font-medium uppercase ${statusStyle(o.status)}`}>{o.status}</span>
+                                </div>
+                              </div>
+                              {o.was_replaced && (
+                                <p className="text-[11px] text-zinc-600 line-through">
+                                  {replacementLabel({ product: o.replaced_product, color: o.replaced_color, size: o.replaced_size })}
+                                </p>
+                              )}
+                              <div className="flex items-center justify-between text-xs">
+                                <span className="text-zinc-300">{o.product} {variantLabel(o) && <span className="text-zinc-500">({variantLabel(o)})</span>} ×{o.quantity}</span>
+                                <span className="font-mono text-zinc-400">EGP {o.total_price?.toLocaleString()}</span>
+                              </div>
+                              <div className="flex items-center justify-between text-xs border-t border-zinc-800/60 pt-1 mt-1">
+                                <span className="text-zinc-600">{pd.label}</span>
+                                <span className={`font-mono font-bold ${pd.color}`}>{pd.value}</span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
                     )}
                   </div>
-
-                  {expandedCustomer === customer.name && (
-                    <div className="border-t border-zinc-800 pt-3 space-y-2">
-                      <p className="text-[11px] text-zinc-500 uppercase tracking-wider font-semibold">Order History</p>
-                      {customer.orders.map((o, i) => (
-                        <div key={i} className="bg-zinc-900/60 border border-zinc-800/60 rounded-lg px-3 py-2 space-y-1">
-                          <div className="flex items-center justify-between text-xs">
-                            <span className="text-zinc-500">{o.created_at}</span>
-                            <div className="flex items-center gap-1.5">
-                              {o.was_replaced && <span className={replacedBadge}>Replaced</span>}
-                              <span className={`px-2 py-0.5 rounded text-[10px] font-medium uppercase ${statusStyle(o.status)}`}>{o.status}</span>
-                            </div>
-                          </div>
-                          {o.was_replaced && (
-                            <p className="text-[11px] text-zinc-600 line-through">
-                              {replacementLabel({ product: o.replaced_product, color: o.replaced_color, size: o.replaced_size })}
-                            </p>
-                          )}
-                          <div className="flex items-center justify-between text-xs">
-                            <span className="text-zinc-300">{o.product} {variantLabel(o) && <span className="text-zinc-500">({variantLabel(o)})</span>} ×{o.quantity}</span>
-                            <span className="font-mono text-white">EGP {o.total_price?.toLocaleString()}</span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ))}
+                );
+              })}
             </div>
 
             {/* Desktop */}
@@ -242,88 +301,105 @@ export default function CustomersPage() {
                       <th className="p-4 text-center">Latest Status</th>
                       <th className="p-4 text-center">Payment</th>
                       <th className="p-4 text-right">Total Spent</th>
+                      <th className="p-4 text-right">Net Profit</th>
                       <th className="p-4 text-right">Date</th>
                     </tr>
                   </thead>
                   <tbody className="text-sm text-zinc-300">
-                    {filteredCustomers.map((customer, index) => (
-                      <React.Fragment key={index}>
-                        <tr className="border-b border-zinc-900 hover:bg-zinc-900/40 transition-colors">
-                          <td className="p-4">
-                            <div className="flex items-center space-x-3">
-                              <div className="w-9 h-9 bg-zinc-900 border border-zinc-800 rounded-full flex items-center justify-center text-xs text-zinc-400 uppercase font-bold shrink-0">
-                                {customer.name.charAt(0)}
-                              </div>
-                              <div>
-                                <p className="font-semibold text-white">{customer.name}</p>
-                                <p className="text-xs text-zinc-500 font-mono mt-0.5">{customer.phone}</p>
-                              </div>
-                            </div>
-                          </td>
-                          <td className="p-4">
-                            {customer.orders[0] && (
-                              <div className="space-y-0.5">
-                                {customer.latestWasReplaced && (
-                                  <p className="text-[11px] text-zinc-600 line-through">
-                                    {replacementLabel({ product: customer.latestReplacedProduct, color: customer.latestReplacedColor, size: customer.latestReplacedSize })}
-                                  </p>
-                                )}
-                                <p className="text-xs text-zinc-300">{customer.orders[0].product}</p>
-                                {variantLabel(customer.orders[0]) && <p className="text-[11px] text-zinc-500">{variantLabel(customer.orders[0])} · ×{customer.orders[0].quantity}</p>}
-                              </div>
-                            )}
-                          </td>
-                          <td className="p-4 text-center font-mono text-zinc-300">{customer.totalOrders}</td>
-                          <td className="p-4 text-center">
-                            <div className="flex items-center justify-center gap-1.5">
-                              {customer.latestWasReplaced && <span className={replacedBadge}>Replaced</span>}
-                              <span className={`px-2 py-1 rounded-md text-[11px] font-medium uppercase tracking-wide ${statusStyle(customer.latestStatus)}`}>{customer.latestStatus}</span>
-                            </div>
-                          </td>
-                          <td className="p-4 text-center">
-                            <span className="bg-zinc-950 border border-zinc-800 px-2 py-0.5 rounded text-xs capitalize text-zinc-400">{customer.paymentMethod}</span>
-                          </td>
-                          <td className="p-4 text-right text-white font-medium font-mono">EGP {customer.totalSpent.toLocaleString()}</td>
-                          <td className="p-4 text-right text-zinc-500 text-xs font-medium">{customer.lastOrderDate}</td>
-                          <td className="p-4 text-right">
-                            {customer.totalOrders > 1 && (
-                              <button onClick={() => setExpandedCustomer(expandedCustomer === customer.name ? null : customer.name)}
-                                className="text-xs text-zinc-500 hover:text-white border border-zinc-800 bg-zinc-900 hover:bg-zinc-800 px-2.5 py-1 rounded-lg transition-colors">
-                                {expandedCustomer === customer.name ? '▲ Hide' : `▼ ${customer.totalOrders} orders`}
-                              </button>
-                            )}
-                          </td>
-                        </tr>
-                        {expandedCustomer === customer.name && (
-                          <tr className="border-b border-zinc-900 bg-zinc-950/60">
-                            <td colSpan={7} className="px-6 py-4">
-                              <div className="space-y-2">
-                                <p className="text-[11px] text-zinc-500 uppercase tracking-wider font-semibold mb-3">Order History</p>
-                                {customer.orders.map((o, i) => (
-                                  <div key={i} className="bg-zinc-900/60 border border-zinc-800/60 rounded-lg px-4 py-2.5 space-y-1">
-                                    <div className="flex items-center justify-between text-xs">
-                                      <span className="text-zinc-500 font-mono">{o.created_at}</span>
-                                      <span className="text-zinc-400 capitalize">{o.payment_method}</span>
-                                      <span className="font-mono text-white">EGP {o.total_price?.toLocaleString()}</span>
-                                      <div className="flex items-center gap-1.5">
-                                        {o.was_replaced && <span className={replacedBadge}>Replaced</span>}
-                                        <span className={`px-2 py-0.5 rounded text-[10px] font-medium uppercase ${statusStyle(o.status)}`}>{o.status}</span>
-                                      </div>
-                                    </div>
-                                    {o.was_replaced && (
-                                      <p className="text-[11px] text-zinc-600 line-through">
-                                        {replacementLabel({ product: o.replaced_product, color: o.replaced_color, size: o.replaced_size })}
-                                      </p>
-                                    )}
-                                    <p className="text-xs text-zinc-300">{o.product} {variantLabel(o) && <span className="text-zinc-500">({variantLabel(o)})</span>} ×{o.quantity}</p>
-                                  </div>
-                                ))}
+                    {filteredCustomers.map((customer, index) => {
+                      const latestPd = profitDisplay({
+                        status: customer.latestStatus,
+                        net_profit: customer.latestNetProfit,
+                        shipping_price: customer.latestShippingPrice,
+                        flyer_cost: customer.latestFlyerCost,
+                      });
+                      return (
+                        <React.Fragment key={index}>
+                          <tr className="border-b border-zinc-900 hover:bg-zinc-900/40 transition-colors">
+                            <td className="p-4">
+                              <div className="flex items-center space-x-3">
+                                <div className="w-9 h-9 bg-zinc-900 border border-zinc-800 rounded-full flex items-center justify-center text-xs text-zinc-400 uppercase font-bold shrink-0">
+                                  {customer.name.charAt(0)}
+                                </div>
+                                <div>
+                                  <p className="font-semibold text-white">{customer.name}</p>
+                                  <p className="text-xs text-zinc-500 font-mono mt-0.5">{customer.phone}</p>
+                                </div>
                               </div>
                             </td>
+                            <td className="p-4">
+                              {customer.orders[0] && (
+                                <div className="space-y-0.5">
+                                  {customer.latestWasReplaced && (
+                                    <p className="text-[11px] text-zinc-600 line-through">
+                                      {replacementLabel({ product: customer.latestReplacedProduct, color: customer.latestReplacedColor, size: customer.latestReplacedSize })}
+                                    </p>
+                                  )}
+                                  <p className="text-xs text-zinc-300">{customer.orders[0].product}</p>
+                                  {variantLabel(customer.orders[0]) && <p className="text-[11px] text-zinc-500">{variantLabel(customer.orders[0])} · ×{customer.orders[0].quantity}</p>}
+                                </div>
+                              )}
+                            </td>
+                            <td className="p-4 text-center font-mono text-zinc-300">{customer.totalOrders}</td>
+                            <td className="p-4 text-center">
+                              <div className="flex items-center justify-center gap-1.5">
+                                {customer.latestWasReplaced && <span className={replacedBadge}>Replaced</span>}
+                                <span className={`px-2 py-1 rounded-md text-[11px] font-medium uppercase tracking-wide ${statusStyle(customer.latestStatus)}`}>{customer.latestStatus}</span>
+                              </div>
+                            </td>
+                            <td className="p-4 text-center">
+                              <span className="bg-zinc-950 border border-zinc-800 px-2 py-0.5 rounded text-xs capitalize text-zinc-400">{customer.paymentMethod}</span>
+                            </td>
+                            <td className="p-4 text-right text-white font-medium font-mono">EGP {customer.totalSpent.toLocaleString()}</td>
+                            {/* Net Profit column */}
+                            <td className="p-4 text-right">
+                              <span className={`font-mono font-bold text-sm ${latestPd.color}`}>{latestPd.value}</span>
+                            </td>
+                            <td className="p-4 text-right text-zinc-500 text-xs font-medium">{customer.lastOrderDate}</td>
+                            <td className="p-4 text-right">
+                              {customer.totalOrders > 1 && (
+                                <button onClick={() => setExpandedCustomer(expandedCustomer === customer.name ? null : customer.name)}
+                                  className="text-xs text-zinc-500 hover:text-white border border-zinc-800 bg-zinc-900 hover:bg-zinc-800 px-2.5 py-1 rounded-lg transition-colors">
+                                  {expandedCustomer === customer.name ? '▲ Hide' : `▼ ${customer.totalOrders} orders`}
+                                </button>
+                              )}
+                            </td>
                           </tr>
-                        )}
-                      </React.Fragment>
-                    ))}
+                          {expandedCustomer === customer.name && (
+                            <tr className="border-b border-zinc-900 bg-zinc-950/60">
+                              <td colSpan={9} className="px-6 py-4">
+                                <div className="space-y-2">
+                                  <p className="text-[11px] text-zinc-500 uppercase tracking-wider font-semibold mb-3">Order History</p>
+                                  {customer.orders.map((o, i) => {
+                                    const pd = profitDisplay(o);
+                                    return (
+                                      <div key={i} className="bg-zinc-900/60 border border-zinc-800/60 rounded-lg px-4 py-2.5 space-y-1">
+                                        <div className="flex items-center justify-between text-xs">
+                                          <span className="text-zinc-500 font-mono">{o.created_at}</span>
+                                          <span className="text-zinc-400 capitalize">{o.payment_method}</span>
+                                          <span className="font-mono text-zinc-400">EGP {o.total_price?.toLocaleString()}</span>
+                                          <span className={`font-mono font-bold text-xs ${pd.color}`}>{pd.value}</span>
+                                          <div className="flex items-center gap-1.5">
+                                            {o.was_replaced && <span className={replacedBadge}>Replaced</span>}
+                                            <span className={`px-2 py-0.5 rounded text-[10px] font-medium uppercase ${statusStyle(o.status)}`}>{o.status}</span>
+                                          </div>
+                                        </div>
+                                        {o.was_replaced && (
+                                          <p className="text-[11px] text-zinc-600 line-through">
+                                            {replacementLabel({ product: o.replaced_product, color: o.replaced_color, size: o.replaced_size })}
+                                          </p>
+                                        )}
+                                        <p className="text-xs text-zinc-300">{o.product} {variantLabel(o) && <span className="text-zinc-500">({variantLabel(o)})</span>} ×{o.quantity}</p>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

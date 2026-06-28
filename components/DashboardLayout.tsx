@@ -2,16 +2,16 @@
 'use client';
 
 import React, { useState } from 'react';
-import Link from 'next/link'; // 👈 استوردنا الـ Link عشان التنقل السريع
-import { usePathname } from 'next/navigation'; // 👈 عشان نعرف الصفحة الحالية وننور زرارها
+import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const pathname = usePathname(); // 👈 بيجيب مسار الصفحة الحالية (مثلاً: /products)
+  const pathname = usePathname();
 
-  // 1. هنا زودنا الـ path لكل صفحة بالظبط زاي اسم الفولدر بتاعها
+  // ✅ Dashboard دلوقتي مساره /dashboard مش / (الـ / بقت بتعمل redirect لصفحة Drops)
   const menuItems = [
-    { name: 'Dashboard', icon: '📊', path: '/' },
+    { name: 'Dashboard', icon: '📊', path: '/dashboard' },
     { name: 'Products', icon: '📦', path: '/products' },
     { name: 'Inventory', icon: '🗂️', path: '/inventory' },
     { name: 'Orders', icon: '🛍️', path: '/orders' },
@@ -26,23 +26,31 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       {/* الـ Sidebar الخاص بالـ Desktop */}
       <aside className="hidden md:flex flex-col w-64 bg-[#09090b] border-r border-zinc-800 fixed h-screen p-5 justify-between">
         <div>
-          <div className="mb-10 px-2">
+          <div className="mb-6 px-2">
             <h1 className="text-2xl font-bold tracking-widest text-white">MISSION</h1>
             <p className="text-xs text-zinc-500 mt-1">The mission never stops.</p>
           </div>
+
+          {/* ✅ زرار العودة لصفحة Drops، عشان تقدر تغير الـ Drop اللي شغال عليه بسهولة */}
+          <Link
+            href="/drops"
+            className="flex items-center justify-between px-4 py-2.5 mb-6 rounded-lg text-xs font-medium bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-white hover:border-zinc-600 transition-colors"
+          >
+            <span>⇄ Switch Drop</span>
+            <span className="text-zinc-600">→</span>
+          </Link>
+
           <nav className="space-y-1">
             {menuItems.map((item) => {
-              // 👈 هنا بنشيك: لو مسار الصفحة الحالية هو نفسه الـ path بتاع الزرار، نوره بالأبيض
               const isActive = pathname === item.path;
-
               return (
                 <Link
                   key={item.name}
-                  href={item.path} // 👈 هنا بنخليه يروح للمسار الصح المكتوب فوق
+                  href={item.path}
                   className={`flex items-center space-x-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors ${
                     isActive 
-                      ? 'bg-white text-black font-semibold' // منور أبيض لو نشط
-                      : 'text-zinc-400 hover:bg-zinc-900 hover:text-white' // رمادي لو مش نشط
+                      ? 'bg-white text-black font-semibold'
+                      : 'text-zinc-400 hover:bg-zinc-900 hover:text-white'
                   }`}
                 >
                   <span>{item.icon}</span>
@@ -69,18 +77,28 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           
           <aside className="relative flex flex-col w-64 bg-[#09090b] h-full p-5 justify-between z-10 border-r border-zinc-800">
             <div>
-              <div className="flex justify-between items-center mb-10 px-2">
+              <div className="flex justify-between items-center mb-6 px-2">
                 <h1 className="text-2xl font-bold tracking-widest text-white">MISSION</h1>
                 <button onClick={() => setIsMobileMenuOpen(false)} className="text-zinc-400 text-xl">✕</button>
               </div>
+
+              <Link
+                href="/drops"
+                onClick={() => setIsMobileMenuOpen(false)}
+                className="flex items-center justify-between px-4 py-2.5 mb-6 rounded-lg text-xs font-medium bg-zinc-900 border border-zinc-800 text-zinc-400"
+              >
+                <span>⇄ Switch Drop</span>
+                <span className="text-zinc-600">→</span>
+              </Link>
+
               <nav className="space-y-1">
                 {menuItems.map((item) => {
                   const isActive = pathname === item.path;
                   return (
                     <Link
                       key={item.name}
-                      href={item.path} // 👈 تعديل الموبايل برضه
-                      onClick={() => setIsMobileMenuOpen(false)} // يقفل المنيو لما تضغط على زرار
+                      href={item.path}
+                      onClick={() => setIsMobileMenuOpen(false)}
                       className={`flex items-center space-x-3 px-4 py-3 rounded-lg text-sm font-medium ${
                         isActive ? 'bg-white text-black font-semibold' : 'text-zinc-400'
                       }`}
