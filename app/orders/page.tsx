@@ -71,7 +71,6 @@ export default function OrdersPage() {
   const payments = ["cash on delivery", "instapay", "credit card", "mobile wallet", "mylerz", "Abanoub", "Youssef", "Mina"];
   const statuses  = ["pending", "shipped", "delivered", "canceled"];
 
-  // ✅ Kashier applies on credit card or mobile wallet only
   const kashierPayments = ["credit card", "mobile wallet"];
 
   const emptyForm = {
@@ -79,7 +78,6 @@ export default function OrdersPage() {
     product_id: "", product: "", variant_id: "", color: "", size: "",
     quantity: "1", platform: "other", payment_method: "cash on delivery",
     total_price: "0", shipping_price: "0", net_profit: "0", status: "pending",
-    // Deductions
     additional_cost: "0",
     kashier_percent: "2", kashier_fixed: "2",
     ads_percent: "0",
@@ -115,18 +113,15 @@ export default function OrdersPage() {
     ? selectedVariant.stock + (editingOrder?.variant_id === selectedVariant.id && !isInactiveStatus(editingOrder?.status) ? (editingOrder?.quantity || 1) : 0)
     : 0;
 
-  // ✅ حساب الـ net profit أوتوماتيك مع كل تغيير في الـ deductions
   const calcNetProfit = (data: typeof formData, product?: Product) => {
     const total         = parseFloat(data.total_price) || 0;
     const cost          = (product?.cost || selectedProduct?.cost || 0) * (parseInt(data.quantity) || 1);
     const grossProfit   = total - cost;
-
     const additionalCost  = parseFloat(data.additional_cost) || 0;
     const isKashier       = kashierPayments.includes(data.payment_method.toLowerCase());
     const kashierFee      = isKashier ? ((parseFloat(data.kashier_percent) || 0) / 100 * total) + (parseFloat(data.kashier_fixed) || 0) : 0;
     const adsFee          = (parseFloat(data.ads_percent) || 0) / 100 * grossProfit;
     const returnsFee      = (parseFloat(data.returns_percent) || 0) / 100 * grossProfit;
-
     return grossProfit - additionalCost - kashierFee - adsFee - returnsFee;
   };
 
@@ -206,6 +201,13 @@ export default function OrdersPage() {
     }
   };
 
+  // ✅ helper لتعديل الـ sales_count
+  const adjustSalesCount = async (productId: number, delta: number) => {
+    const { data: prod } = await supabase.from("products").select("sales_count").eq("id", productId).single();
+    const newCount = Math.max(0, (prod?.sales_count || 0) + delta);
+    await supabase.from("products").update({ sales_count: newCount }).eq("id", productId);
+  };
+
   const openCancelModal = (order: any) => { setCancelingOrder(order); setFlyerCostInput("5"); };
 
   const confirmCancel = async () => {
@@ -271,17 +273,20 @@ export default function OrdersPage() {
       await supabase.from("orders").insert([payload]);
       if (variantId && !isInactiveStatus(formData.status)) {
         await adjustVariantStock(variantId, -qty);
-        const { data: prod } = await supabase.from("products").select("sales_count").eq("id", productId!).single();
-        await supabase.from("products").update({ sales_count: (prod?.sales_count || 0) + 1 }).eq("id", productId!);
+        if (productId) await adjustSalesCount(productId, 1);
       }
     }
     setIsModalOpen(false);
     fetchData();
   };
 
+  // ✅ handleDelete: بيرجع الـ stock ويقلل الـ sales_count
   const handleDelete = async (id: number) => {
     const order = orders.find(o => o.id === id);
-    if (order?.variant_id && !isInactiveStatus(order.status)) await adjustVariantStock(order.variant_id, order.quantity || 1);
+    if (order?.variant_id && !isInactiveStatus(order.status)) {
+      await adjustVariantStock(order.variant_id, order.quantity || 1);
+      if (order.product_id) await adjustSalesCount(order.product_id, -1);
+    }
     await supabase.from("orders").delete().eq("id", id);
     setDeleteConfirmId(null);
     fetchData();
@@ -387,8 +392,7 @@ export default function OrdersPage() {
         net_profit: netProfit, status: "pending", drop_id: dropId,
       }]);
       await adjustVariantStock(row.matched_variant.id, -row.quantity);
-      const { data: prod } = await supabase.from("products").select("sales_count").eq("id", row.matched_product.id).single();
-      await supabase.from("products").update({ sales_count: (prod?.sales_count || 0) + 1 }).eq("id", row.matched_product.id);
+      await adjustSalesCount(row.matched_product.id, 1);
       imported++;
     }
     setImportSummary({ imported, skipped });
@@ -408,13 +412,11 @@ export default function OrdersPage() {
   const platformIcon = (p: string) => ({ shopify:"🛒", tiktok:"🎵", facebook:"📘", instagram:"📸", whatsapp:"💬", other:"🌐" }[p?.toLowerCase()] || "🌐");
   const isInactive = (o: any) => isInactiveStatus(o.status);
   const inputClass = "w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-zinc-600 transition-colors";
-  const smallInput = "w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5 text-sm text-white focus:outline-none focus:border-zinc-600 transition-colors text-center";
   const replacementLabel = (full: { product?: string; color?: string; size?: string }) =>
     [full.product, full.color, full.size].filter(Boolean).join(' · ');
   const matchedCount = csvRows.filter(r => r.matchStatus === 'matched').length;
   const skippedCount = csvRows.length - matchedCount;
 
-  // حساب الـ deductions للعرض في الفورم
   const isKashierPayment = kashierPayments.includes(formData.payment_method.toLowerCase());
   const displayTotal      = parseFloat(formData.total_price) || 0;
   const displayCost       = (selectedProduct?.cost || 0) * (parseInt(formData.quantity) || 1);
@@ -756,7 +758,7 @@ export default function OrdersPage() {
           <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
             <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-6 w-full max-w-sm space-y-4">
               <h2 className="text-lg font-bold text-white">Delete Order?</h2>
-              <p className="text-sm text-zinc-400">Stock will be restored automatically.</p>
+              <p className="text-sm text-zinc-400">Stock and sales count will be restored automatically.</p>
               <div className="flex gap-3">
                 <button onClick={() => setDeleteConfirmId(null)} className="flex-1 py-2.5 bg-zinc-900 text-white rounded-lg text-sm font-medium">Cancel</button>
                 <button onClick={() => handleDelete(deleteConfirmId)} className="flex-1 py-2.5 bg-red-500 hover:bg-red-600 text-white rounded-lg text-sm font-bold">Delete</button>
@@ -774,7 +776,6 @@ export default function OrdersPage() {
                 <button type="button" onClick={() => setIsModalOpen(false)} className="text-zinc-500 hover:text-white text-xl leading-none">✕</button>
               </div>
               <div className="p-6 space-y-4 max-h-[75vh] overflow-y-auto">
-
                 <div>
                   <p className="text-xs text-zinc-500 font-medium uppercase tracking-wider mb-2">Customer</p>
                   <div className="grid grid-cols-2 gap-3">
@@ -782,7 +783,6 @@ export default function OrdersPage() {
                     <input type="text" placeholder="Phone number" className={inputClass} value={formData.customer_phone} onChange={(e) => setFormData({ ...formData, customer_phone: e.target.value })} />
                   </div>
                 </div>
-
                 <div>
                   <p className="text-xs text-zinc-500 font-medium uppercase tracking-wider mb-2">Product</p>
                   <select className={inputClass} value={formData.product_id} onChange={(e) => handleProductChange(e.target.value)}>
@@ -790,7 +790,6 @@ export default function OrdersPage() {
                     {products.map(p => <option key={p.id} value={p.id} className="bg-zinc-900">{p.name} — EGP {p.price}</option>)}
                   </select>
                 </div>
-
                 {availableColors.length > 0 && (
                   <div>
                     <p className="text-xs text-zinc-500 font-medium uppercase tracking-wider mb-2">Color</p>
@@ -802,7 +801,6 @@ export default function OrdersPage() {
                     </div>
                   </div>
                 )}
-
                 {formData.color && availableSizes.length > 0 && (
                   <div>
                     <p className="text-xs text-zinc-500 font-medium uppercase tracking-wider mb-2">Size</p>
@@ -820,7 +818,6 @@ export default function OrdersPage() {
                     </div>
                   </div>
                 )}
-
                 {formData.size && (
                   <div>
                     <p className="text-xs text-zinc-500 font-medium uppercase tracking-wider mb-2">Quantity</p>
@@ -829,15 +826,12 @@ export default function OrdersPage() {
                     {parseInt(formData.quantity) > availableStock && <p className="text-xs text-red-400 mt-1">⚠ Exceeds available stock</p>}
                   </div>
                 )}
-
                 <div>
                   <p className="text-xs text-zinc-500 font-medium uppercase tracking-wider mb-2">Platform</p>
                   <select className={inputClass} value={formData.platform} onChange={(e) => setFormData({ ...formData, platform: e.target.value })}>
                     {platforms.map(p => <option key={p} value={p} className="bg-zinc-900 capitalize">{p}</option>)}
                   </select>
                 </div>
-
-                {/* Pricing */}
                 <div>
                   <p className="text-xs text-zinc-500 font-medium uppercase tracking-wider mb-2">Pricing</p>
                   <div className="grid grid-cols-2 gap-3">
@@ -851,15 +845,11 @@ export default function OrdersPage() {
                     </div>
                   </div>
                 </div>
-
-                {/* ✅ Deductions Section */}
                 <div className="border border-zinc-800 rounded-xl overflow-hidden">
                   <div className="px-4 py-3 bg-zinc-900/50 border-b border-zinc-800">
                     <p className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Deductions</p>
                   </div>
                   <div className="p-4 space-y-3">
-
-                    {/* Additional Cost */}
                     <div className="flex items-center justify-between gap-3">
                       <div className="flex-1">
                         <p className="text-xs text-zinc-300 font-medium">Additional Cost</p>
@@ -872,14 +862,10 @@ export default function OrdersPage() {
                         {displayAdditional > 0 && <span className="text-xs text-red-400 font-mono w-16 text-right">−{displayAdditional.toFixed(1)}</span>}
                       </div>
                     </div>
-
-                    {/* Kashier */}
                     <div className="flex items-center justify-between gap-3">
                       <div className="flex-1">
                         <p className="text-xs text-zinc-300 font-medium">Kashier Fee</p>
-                        <p className="text-[10px] text-zinc-600">
-                          {isKashierPayment ? 'Applied (credit card / wallet)' : 'Not applied for this payment method'}
-                        </p>
+                        <p className="text-[10px] text-zinc-600">{isKashierPayment ? 'Applied (credit card / wallet)' : 'Not applied for this payment method'}</p>
                       </div>
                       <div className="flex items-center gap-1.5 shrink-0">
                         <input type="number" min="0" max="100" step="0.1" value={formData.kashier_percent} onChange={(e) => setFormData({ ...formData, kashier_percent: e.target.value })}
@@ -892,8 +878,6 @@ export default function OrdersPage() {
                         {isKashierPayment && displayKashier > 0 && <span className="text-xs text-red-400 font-mono w-16 text-right">−{displayKashier.toFixed(1)}</span>}
                       </div>
                     </div>
-
-                    {/* Ads */}
                     <div className="flex items-center justify-between gap-3">
                       <div className="flex-1">
                         <p className="text-xs text-zinc-300 font-medium">Ads</p>
@@ -906,8 +890,6 @@ export default function OrdersPage() {
                         {displayAds > 0 && <span className="text-xs text-red-400 font-mono w-16 text-right">−{displayAds.toFixed(1)}</span>}
                       </div>
                     </div>
-
-                    {/* Returns */}
                     <div className="flex items-center justify-between gap-3">
                       <div className="flex-1">
                         <p className="text-xs text-zinc-300 font-medium">Returns Provision</p>
@@ -920,8 +902,6 @@ export default function OrdersPage() {
                         {displayReturns > 0 && <span className="text-xs text-red-400 font-mono w-16 text-right">−{displayReturns.toFixed(1)}</span>}
                       </div>
                     </div>
-
-                    {/* Net Profit Result */}
                     <div className="border-t border-zinc-800 pt-3 flex items-center justify-between">
                       <p className="text-sm font-bold text-white">Net Profit</p>
                       <p className={`text-lg font-black font-mono ${parseFloat(formData.net_profit) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
@@ -930,7 +910,6 @@ export default function OrdersPage() {
                     </div>
                   </div>
                 </div>
-
                 <div>
                   <p className="text-xs text-zinc-500 font-medium uppercase tracking-wider mb-2">Payment Method</p>
                   <div className="grid grid-cols-2 gap-2">
@@ -940,7 +919,6 @@ export default function OrdersPage() {
                     ))}
                   </div>
                 </div>
-
                 <div>
                   <p className="text-xs text-zinc-500 font-medium uppercase tracking-wider mb-2">Status</p>
                   {editingOrder?.was_replaced && <p className="text-[11px] text-purple-400 mb-2">This order was previously replaced.</p>}
