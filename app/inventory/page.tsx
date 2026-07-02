@@ -20,10 +20,17 @@ interface Variant {
   product_price?: number;
 }
 
+interface SoldEntry {
+  variant_id: number;
+  quantity: number;
+}
+
 export default function InventoryPage() {
   const router = useRouter();
   const [dropId, setDropId] = useState<number | null>(null);
   const [variants, setVariants] = useState<Variant[]>([]);
+  const [soldMap, setSoldMap] = useState<Record<number, number>>({});
+  const [ordersRaw, setOrdersRaw] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [showLowStockOnly, setShowLowStockOnly] = useState(false);
@@ -31,13 +38,9 @@ export default function InventoryPage() {
   const [restockModal, setRestockModal] = useState<Variant | null>(null);
   const [restockQty, setRestockQty] = useState('');
 
-  // ✅ نقرأ الـ Drop المختار من localStorage
   useEffect(() => {
     const savedDropId = localStorage.getItem('selectedDropId');
-    if (!savedDropId) {
-      router.replace('/drops');
-      return;
-    }
+    if (!savedDropId) { router.replace('/drops'); return; }
     setDropId(parseInt(savedDropId));
   }, [router]);
 
@@ -45,7 +48,6 @@ export default function InventoryPage() {
     if (!dropId) return;
     setLoading(true);
 
-    // ✅ بنجيب الـ products بتاعة الـ Drop الأول، وبعدين الـ variants بتاعتهم
     const { data: productsData } = await supabase
       .from('products')
       .select('id, name, category, cost, price')
@@ -58,11 +60,11 @@ export default function InventoryPage() {
     }
 
     const productIds = productsData.map(p => p.id);
-    const { data: variantsData } = await supabase
-      .from('product_variants')
-      .select('*')
-      .in('product_id', productIds)
-      .order('product_id');
+
+    const [{ data: variantsData }, { data: ordersData }] = await Promise.all([
+      supabase.from('product_variants').select('*').in('product_id', productIds).order('product_id'),
+      supabase.from('orders').select('variant_id, quantity, unit_cost, product_id').eq('drop_id', dropId).neq('status', 'canceled'),
+    ]);
 
     if (variantsData) {
       setVariants(variantsData.map((v: any) => {
@@ -76,6 +78,19 @@ export default function InventoryPage() {
         };
       }));
     }
+
+    // ✅ حساب الكميات المباعة لكل variant من الـ orders مباشرة
+    if (ordersData) {
+      setOrdersRaw(ordersData);
+      const map: Record<number, number> = {};
+      ordersData.forEach((o: any) => {
+        if (o.variant_id) {
+          map[o.variant_id] = (map[o.variant_id] || 0) + (o.quantity || 0);
+        }
+      });
+      setSoldMap(map);
+    }
+
     setLoading(false);
   };
 
@@ -86,7 +101,10 @@ export default function InventoryPage() {
     const qty = parseInt(restockQty);
     if (isNaN(qty) || qty <= 0) return;
     const newStock = restockModal.stock + qty;
-    const newTotalAdded = (restockModal.total_added || 0) + qty; // ✅ رأس المال بيتزود بس، ما بيقلش
+    const newTotalAdded = Math.max(
+      (restockModal.total_added || 0) + qty,
+      restockModal.stock + qty
+    );
 
     await supabase.from('product_variants').update({ stock: newStock, total_added: newTotalAdded }).eq('id', restockModal.id);
 
@@ -108,7 +126,6 @@ export default function InventoryPage() {
       product_cost: pvs[0]?.product_cost || 0,
       product_price: pvs[0]?.product_price || 0,
       totalStock: pvs.reduce((s, v) => s + v.stock, 0),
-      totalAdded: pvs.reduce((s, v) => s + (v.total_added || 0), 0), // ✅
       variants: pvs,
     };
   });
@@ -119,13 +136,20 @@ export default function InventoryPage() {
     return matchSearch && matchLow;
   });
 
-  const totalItemsInStock  = variants.reduce((s, v) => s + v.stock, 0);
-  // ✅ Capital Invested: ثابت طول الوقت، بيتغير بس لما تضيف منتج جديد أو تعمل restock
-  const capitalInvested    = variants.reduce((s, v) => s + ((v.total_added || 0) * (v.product_cost || 0)), 0);
-  // قيمة المخزون المتبقي: ده اللي كان قبل كده اسمه "Inventory Cost"، طبيعي يقل مع البيع
-  const remainingValue     = variants.reduce((s, v) => s + (v.stock * (v.product_cost || 0)), 0);
-  const potentialRevenue   = variants.reduce((s, v) => s + (v.stock * (v.product_price || 0)), 0);
-  const lowStockAlerts     = groupedByProduct.filter(p => p.totalStock <= 5).length;
+  const totalItemsInStock = variants.reduce((s, v) => s + v.stock, 0);
+
+  // ✅ Capital Invested = قيمة الـ stock الحالي + قيمة اللي اتباع بالـ cost وقت البيع
+  // كده لو غيرت الـ cost الأوردرات القديمة تفضل محسوبة بالـ cost القديم
+  const capitalInvested = variants.reduce((s, v) => {
+    const soldOrders = (ordersRaw).filter((o: any) => o.variant_id === v.id);
+    const soldValue = soldOrders.reduce((sum: number, o: any) => 
+      sum + ((o.unit_cost || v.product_cost || 0) * (o.quantity || 0)), 0);
+    return s + soldValue + (v.stock * (v.product_cost || 0));
+  }, 0);
+
+  const remainingValue   = variants.reduce((s, v) => s + (v.stock * (v.product_cost || 0)), 0);
+  const potentialRevenue = variants.reduce((s, v) => s + (v.stock * (v.product_price || 0)), 0);
+  const lowStockAlerts   = groupedByProduct.filter(p => p.totalStock <= 5).length;
 
   const stockBadge = (stock: number) => {
     if (stock === 0) return 'bg-red-500/20 text-red-500 border border-red-500/30';
@@ -152,13 +176,11 @@ export default function InventoryPage() {
             <p className="text-[10px] font-semibold text-zinc-500 uppercase">Total in Stock</p>
             <p className="text-xl font-bold text-white font-mono mt-1">{totalItemsInStock} <span className="text-xs text-zinc-500 font-sans">pcs</span></p>
           </div>
-          {/* ✅ Capital Invested - رقم ثابت، رأس المال اللي دفعته فعلياً */}
           <div className="bg-[#09090b] border border-zinc-800 rounded-xl p-4">
             <p className="text-[10px] font-semibold text-zinc-500 uppercase">Capital Invested</p>
             <p className="text-xl font-bold text-white font-mono mt-1">EGP {capitalInvested.toLocaleString()}</p>
-            <p className="text-[10px] text-zinc-600 mt-0.5">Fixed — total ever added</p>
+            <p className="text-[10px] text-zinc-600 mt-0.5">Stock + sold × cost</p>
           </div>
-          {/* قيمة المخزون المتبقي - بيقل طبيعي مع البيع */}
           <div className="bg-[#09090b] border border-zinc-800 rounded-xl p-4">
             <p className="text-[10px] font-semibold text-zinc-500 uppercase">Remaining Stock Value</p>
             <p className="text-xl font-bold text-zinc-300 font-mono mt-1">EGP {remainingValue.toLocaleString()}</p>

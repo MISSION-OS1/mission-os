@@ -70,7 +70,6 @@ export default function OrdersPage() {
   const platforms = ["shopify", "tiktok", "facebook", "instagram", "WhatsApp", "other"];
   const payments = ["cash on delivery", "instapay", "credit card", "mobile wallet", "mylerz", "Abanoub", "Youssef", "Mina"];
   const statuses  = ["pending", "shipped", "delivered", "canceled"];
-
   const kashierPayments = ["credit card", "mobile wallet"];
 
   const emptyForm = {
@@ -80,8 +79,6 @@ export default function OrdersPage() {
     total_price: "0", shipping_price: "0", net_profit: "0", status: "pending",
     additional_cost: "0",
     kashier_percent: "2", kashier_fixed: "2",
-    ads_percent: "0",
-    returns_percent: "0",
   };
   const [formData, setFormData] = useState(emptyForm);
 
@@ -114,15 +111,13 @@ export default function OrdersPage() {
     : 0;
 
   const calcNetProfit = (data: typeof formData, product?: Product) => {
-    const total         = parseFloat(data.total_price) || 0;
-    const cost          = (product?.cost || selectedProduct?.cost || 0) * (parseInt(data.quantity) || 1);
-    const grossProfit   = total - cost;
-    const additionalCost  = parseFloat(data.additional_cost) || 0;
-    const isKashier       = kashierPayments.includes(data.payment_method.toLowerCase());
-    const kashierFee      = isKashier ? ((parseFloat(data.kashier_percent) || 0) / 100 * total) + (parseFloat(data.kashier_fixed) || 0) : 0;
-    const adsFee          = (parseFloat(data.ads_percent) || 0) / 100 * grossProfit;
-    const returnsFee      = (parseFloat(data.returns_percent) || 0) / 100 * grossProfit;
-    return grossProfit - additionalCost - kashierFee - adsFee - returnsFee;
+    const total        = parseFloat(data.total_price) || 0;
+    const cost         = (product?.cost || selectedProduct?.cost || 0) * (parseInt(data.quantity) || 1);
+    const grossProfit  = total - cost;
+    const additionalCost = parseFloat(data.additional_cost) || 0;
+    const isKashier    = kashierPayments.includes(data.payment_method.toLowerCase());
+    const kashierFee   = isKashier ? ((parseFloat(data.kashier_percent) || 0) / 100 * total) + (parseFloat(data.kashier_fixed) || 0) : 0;
+    return grossProfit - additionalCost - kashierFee;
   };
 
   useEffect(() => {
@@ -131,7 +126,7 @@ export default function OrdersPage() {
   }, [
     formData.total_price, formData.quantity, formData.product_id,
     formData.additional_cost, formData.kashier_percent, formData.kashier_fixed,
-    formData.ads_percent, formData.returns_percent, formData.payment_method,
+    formData.payment_method,
   ]);
 
   const handleProductChange = (productId: string) => {
@@ -166,25 +161,23 @@ export default function OrdersPage() {
   const openEdit = (order: any) => {
     setEditingOrder(order);
     setFormData({
-      customer_name:    order.customer_name    || "",
-      customer_phone:   order.customer_phone   || "",
-      product_id:       order.product_id?.toString() || "",
-      product:          order.product          || "",
-      variant_id:       order.variant_id?.toString()  || "",
-      color:            order.color            || "",
-      size:             order.size             || "",
-      quantity:         String(order.quantity  ?? "1"),
-      platform:         order.platform         || "other",
-      payment_method:   order.payment_method   || "cash on delivery",
-      total_price:      String(order.total_price    ?? "0"),
-      shipping_price:   String(order.shipping_price ?? "0"),
-      net_profit:       String(order.net_profit     ?? "0"),
-      status:           order.status           || "pending",
-      additional_cost:  String(order.additional_cost  ?? "0"),
-      kashier_percent:  String(order.kashier_percent  ?? "2"),
-      kashier_fixed:    String(order.kashier_fixed    ?? "2"),
-      ads_percent:      String(order.ads_percent      ?? "0"),
-      returns_percent:  String(order.returns_percent  ?? "0"),
+      customer_name:   order.customer_name   || "",
+      customer_phone:  order.customer_phone  || "",
+      product_id:      order.product_id?.toString() || "",
+      product:         order.product         || "",
+      variant_id:      order.variant_id?.toString() || "",
+      color:           order.color           || "",
+      size:            order.size            || "",
+      quantity:        String(order.quantity  ?? "1"),
+      platform:        order.platform        || "other",
+      payment_method:  order.payment_method  || "cash on delivery",
+      total_price:     String(order.total_price    ?? "0"),
+      shipping_price:  String(order.shipping_price ?? "0"),
+      net_profit:      String(order.net_profit     ?? "0"),
+      status:          order.status          || "pending",
+      additional_cost: String(order.additional_cost ?? "0"),
+      kashier_percent: String(order.kashier_percent ?? "2"),
+      kashier_fixed:   String(order.kashier_fixed   ?? "2"),
     });
     setIsModalOpen(true);
   };
@@ -201,7 +194,6 @@ export default function OrdersPage() {
     }
   };
 
-  // ✅ helper لتعديل الـ sales_count
   const adjustSalesCount = async (productId: number, delta: number) => {
     const { data: prod } = await supabase.from("products").select("sales_count").eq("id", productId).single();
     const newCount = Math.max(0, (prod?.sales_count || 0) + delta);
@@ -248,8 +240,7 @@ export default function OrdersPage() {
       additional_cost: parseFloat(formData.additional_cost) || 0,
       kashier_percent: parseFloat(formData.kashier_percent) || 0,
       kashier_fixed:   parseFloat(formData.kashier_fixed)   || 0,
-      ads_percent:     parseFloat(formData.ads_percent)     || 0,
-      returns_percent: parseFloat(formData.returns_percent) || 0,
+      unit_cost:       selectedProduct?.cost || 0,
     };
 
     if (editingOrder) {
@@ -280,7 +271,6 @@ export default function OrdersPage() {
     fetchData();
   };
 
-  // ✅ handleDelete: بيرجع الـ stock ويقلل الـ sales_count
   const handleDelete = async (id: number) => {
     const order = orders.find(o => o.id === id);
     if (order?.variant_id && !isInactiveStatus(order.status)) {
@@ -325,6 +315,7 @@ export default function OrdersPage() {
       product_id: replacingProduct.id, product: replacingProduct.name,
       variant_id: replacingVariant.id, color: replacingColor, size: replacingSize,
       quantity: qty, total_price: newTotal, net_profit: newProfit, shipping_price: newShipping,
+      unit_cost: replacingProduct.cost,
     }).eq("id", replacingOrder.id);
     setReplacingOrder(null);
     fetchData();
@@ -390,6 +381,7 @@ export default function OrdersPage() {
         quantity: row.quantity, platform: csvPlatform, payment_method: csvPayment,
         total_price: row.total_price, shipping_price: row.shipping_price,
         net_profit: netProfit, status: "pending", drop_id: dropId,
+        unit_cost: row.matched_product.cost,
       }]);
       await adjustVariantStock(row.matched_variant.id, -row.quantity);
       await adjustSalesCount(row.matched_product.id, 1);
@@ -417,14 +409,12 @@ export default function OrdersPage() {
   const matchedCount = csvRows.filter(r => r.matchStatus === 'matched').length;
   const skippedCount = csvRows.length - matchedCount;
 
-  const isKashierPayment = kashierPayments.includes(formData.payment_method.toLowerCase());
+  const isKashierPayment  = kashierPayments.includes(formData.payment_method.toLowerCase());
   const displayTotal      = parseFloat(formData.total_price) || 0;
   const displayCost       = (selectedProduct?.cost || 0) * (parseInt(formData.quantity) || 1);
   const displayGross      = displayTotal - displayCost;
   const displayAdditional = parseFloat(formData.additional_cost) || 0;
   const displayKashier    = isKashierPayment ? ((parseFloat(formData.kashier_percent) || 0) / 100 * displayTotal) + (parseFloat(formData.kashier_fixed) || 0) : 0;
-  const displayAds        = (parseFloat(formData.ads_percent) || 0) / 100 * displayGross;
-  const displayReturns    = (parseFloat(formData.returns_percent) || 0) / 100 * displayGross;
 
   if (!dropId) return null;
 
@@ -876,30 +866,6 @@ export default function OrdersPage() {
                           className={`w-16 bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5 text-sm text-white focus:outline-none focus:border-zinc-600 text-center ${!isKashierPayment ? 'opacity-40' : ''}`} />
                         <span className="text-xs text-zinc-500">EGP</span>
                         {isKashierPayment && displayKashier > 0 && <span className="text-xs text-red-400 font-mono w-16 text-right">−{displayKashier.toFixed(1)}</span>}
-                      </div>
-                    </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="flex-1">
-                        <p className="text-xs text-zinc-300 font-medium">Ads</p>
-                        <p className="text-[10px] text-zinc-600">% من الـ Gross Profit</p>
-                      </div>
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        <input type="number" min="0" max="100" step="0.1" value={formData.ads_percent} onChange={(e) => setFormData({ ...formData, ads_percent: e.target.value })}
-                          className="w-16 bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5 text-sm text-white focus:outline-none focus:border-zinc-600 text-center" />
-                        <span className="text-xs text-zinc-500">%</span>
-                        {displayAds > 0 && <span className="text-xs text-red-400 font-mono w-16 text-right">−{displayAds.toFixed(1)}</span>}
-                      </div>
-                    </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="flex-1">
-                        <p className="text-xs text-zinc-300 font-medium">Returns Provision</p>
-                        <p className="text-[10px] text-zinc-600">% من الـ Gross Profit</p>
-                      </div>
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        <input type="number" min="0" max="100" step="0.1" value={formData.returns_percent} onChange={(e) => setFormData({ ...formData, returns_percent: e.target.value })}
-                          className="w-16 bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5 text-sm text-white focus:outline-none focus:border-zinc-600 text-center" />
-                        <span className="text-xs text-zinc-500">%</span>
-                        {displayReturns > 0 && <span className="text-xs text-red-400 font-mono w-16 text-right">−{displayReturns.toFixed(1)}</span>}
                       </div>
                     </div>
                     <div className="border-t border-zinc-800 pt-3 flex items-center justify-between">
