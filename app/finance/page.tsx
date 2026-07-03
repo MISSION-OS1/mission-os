@@ -12,6 +12,7 @@ interface Order {
   status: string;
   quantity: number;
   product_id: number;
+  created_at: string;
   products?: { cost: number };
 }
 
@@ -30,6 +31,14 @@ interface AdditionalCostItem {
   drop_id: number;
 }
 
+interface MonthlyAdjustment {
+  id: number;
+  drop_id: number;
+  month: string;
+  ads_percent: number;
+  returns_percent: number;
+}
+
 const expenseCategories = ['Marketing', 'Packaging', 'Shipping', 'Salaries', 'Others'];
 const categoryLabel: Record<string, string> = {
   Marketing: '📢 Marketing / Ads',
@@ -39,12 +48,22 @@ const categoryLabel: Record<string, string> = {
   Others:    '🛠️ Others / Overhead',
 };
 
+const MONTHS = [
+  { value: '01', label: 'January' },  { value: '02', label: 'February' },
+  { value: '03', label: 'March' },    { value: '04', label: 'April' },
+  { value: '05', label: 'May' },      { value: '06', label: 'June' },
+  { value: '07', label: 'July' },     { value: '08', label: 'August' },
+  { value: '09', label: 'September' },{ value: '10', label: 'October' },
+  { value: '11', label: 'November' }, { value: '12', label: 'December' },
+];
+
 export default function FinancePage() {
   const router = useRouter();
   const [dropId, setDropId] = useState<number | null>(null);
-  const [orders, setOrders]     = useState<Order[]>([]);
+  const [orders, setOrders] = useState<Order[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [additionalCosts, setAdditionalCosts] = useState<AdditionalCostItem[]>([]);
+  const [monthlyAdjustments, setMonthlyAdjustments] = useState<MonthlyAdjustment[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Expense modal
@@ -63,6 +82,16 @@ export default function FinancePage() {
   const emptyCostForm = { title: '', amount: '' };
   const [costForm, setCostForm] = useState(emptyCostForm);
 
+  // Monthly adjustment modal
+  const [isAdjModalOpen, setIsAdjModalOpen] = useState(false);
+  const [isAdjSubmitting, setIsAdjSubmitting] = useState(false);
+  const [editingAdj, setEditingAdj] = useState<MonthlyAdjustment | null>(null);
+  const [deleteAdjId, setDeleteAdjId] = useState<number | null>(null);
+  const currentYear = new Date().getFullYear().toString();
+  const currentMonth = String(new Date().getMonth() + 1).padStart(2, '0');
+  const emptyAdjForm = { year: currentYear, month: currentMonth, ads_percent: '0', returns_percent: '0' };
+  const [adjForm, setAdjForm] = useState(emptyAdjForm);
+
   const inputClass = "w-full bg-[#121214] border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-zinc-600 transition-colors placeholder-zinc-600";
 
   useEffect(() => {
@@ -74,14 +103,16 @@ export default function FinancePage() {
   const fetchData = async () => {
     if (!dropId) return;
     setLoading(true);
-    const [{ data: ordersData }, { data: expensesData }, { data: costsData }, { data: productsData }] = await Promise.all([
-      supabase.from('orders').select('id, net_profit, total_price, status, quantity, product_id').eq('drop_id', dropId),
+    const [{ data: ordersData }, { data: expensesData }, { data: costsData }, { data: productsData }, { data: adjData }] = await Promise.all([
+      supabase.from('orders').select('id, net_profit, total_price, status, quantity, product_id, created_at').eq('drop_id', dropId),
       supabase.from('expenses').select('*').eq('drop_id', dropId).order('id', { ascending: false }),
       supabase.from('additional_costs').select('*').eq('drop_id', dropId).order('id', { ascending: true }),
       supabase.from('products').select('id, cost').eq('drop_id', dropId),
+      supabase.from('monthly_adjustments').select('*').eq('drop_id', dropId).order('month', { ascending: false }),
     ]);
     if (expensesData) setExpenses(expensesData);
-    if (costsData)    setAdditionalCosts(costsData);
+    if (costsData) setAdditionalCosts(costsData);
+    if (adjData) setMonthlyAdjustments(adjData);
     if (ordersData && productsData) {
       const enriched = ordersData.map((o: any) => ({
         ...o,
@@ -146,23 +177,66 @@ export default function FinancePage() {
     fetchData();
   };
 
+  // ===== Monthly Adjustment handlers =====
+  const openNewAdj = () => { setEditingAdj(null); setAdjForm(emptyAdjForm); setIsAdjModalOpen(true); };
+  const openEditAdj = (adj: MonthlyAdjustment) => {
+    setEditingAdj(adj);
+    const [year, month] = adj.month.split('-');
+    setAdjForm({ year, month, ads_percent: adj.ads_percent.toString(), returns_percent: adj.returns_percent.toString() });
+    setIsAdjModalOpen(true);
+  };
+  const handleAdjSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!dropId) return;
+    setIsAdjSubmitting(true);
+    const monthKey = `${adjForm.year}-${adjForm.month}`;
+    const payload = {
+      drop_id: dropId,
+      month: monthKey,
+      ads_percent: parseFloat(adjForm.ads_percent) || 0,
+      returns_percent: parseFloat(adjForm.returns_percent) || 0,
+    };
+    if (editingAdj) {
+      await supabase.from('monthly_adjustments').update(payload).eq('id', editingAdj.id);
+    } else {
+      await supabase.from('monthly_adjustments').upsert([payload], { onConflict: 'drop_id,month' });
+    }
+    setIsAdjModalOpen(false); setAdjForm(emptyAdjForm); setEditingAdj(null); setIsAdjSubmitting(false);
+    fetchData();
+  };
+  const handleAdjDelete = async (id: number) => {
+    await supabase.from('monthly_adjustments').delete().eq('id', id);
+    setDeleteAdjId(null);
+    fetchData();
+  };
+
   // ===== Calculations =====
   const activeOrders = orders.filter(o => o.status?.toLowerCase() !== 'canceled');
-
-  // Revenue: مجموع total_price للأوردرات النشطة
   const totalRevenue = activeOrders.reduce((s, o) => s + (o.total_price || 0), 0);
-
-  // Gross Profit: price - (cost × quantity) للأوردرات النشطة
   const grossProfit = activeOrders.reduce((s, o) => {
     const cogs = (o.products?.cost || 0) * (o.quantity || 1);
     return s + ((o.total_price || 0) - cogs);
   }, 0);
-
-  // Net Profit: مجموع net_profit من كل الأوردرات (بعد كل الـ deductions)
-  const totalNetProfit = orders.reduce((s, o) => s + (o.net_profit || 0), 0);
-
+  const baseNetProfit = orders.reduce((s, o) => s + (o.net_profit || 0), 0);
   const totalExpenses = expenses.reduce((s, e) => s + (e.amount || 0), 0);
   const totalPerOrder = additionalCosts.reduce((s, c) => s + (c.amount || 0), 0);
+
+  // حساب الـ monthly adjustments — كل شهر بياخد % من الـ net profit بتاعه
+  const totalAdjDeductions = monthlyAdjustments.reduce((s, adj) => {
+    const monthOrders = activeOrders.filter(o => o.created_at?.startsWith(adj.month));
+    const monthNetProfit = monthOrders.reduce((ms, o) => ms + (o.net_profit || 0), 0);
+    const adsDeduction = (adj.ads_percent / 100) * monthNetProfit;
+    const returnsDeduction = (adj.returns_percent / 100) * monthNetProfit;
+    return s + adsDeduction + returnsDeduction;
+  }, 0);
+
+  const totalNetProfit = baseNetProfit - totalAdjDeductions;
+
+  const monthLabel = (monthKey: string) => {
+    const [year, m] = monthKey.split('-');
+    const monthName = MONTHS.find(mo => mo.value === m)?.label || m;
+    return `${monthName} ${year}`;
+  };
 
   if (!dropId) return null;
 
@@ -213,6 +287,58 @@ export default function FinancePage() {
               </div>
             </div>
 
+            {/* ===== Monthly Adjustments ===== */}
+            <div className="bg-[#09090b] border border-zinc-800 rounded-xl overflow-hidden">
+              <div className="flex items-center justify-between px-5 py-4 border-b border-zinc-800">
+                <div>
+                  <h2 className="text-sm font-bold text-white uppercase tracking-wider">Monthly Adjustments</h2>
+                  <p className="text-xs text-zinc-500 mt-0.5">Ads & returns % applied per month on net profit</p>
+                </div>
+                <button onClick={openNewAdj}
+                  className="bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-300 text-xs px-3 py-1.5 rounded-lg font-medium transition-colors whitespace-nowrap">
+                  + Add Month
+                </button>
+              </div>
+              {monthlyAdjustments.length === 0 ? (
+                <div className="text-center text-zinc-600 py-10 text-sm">No monthly adjustments yet.</div>
+              ) : (
+                <div className="divide-y divide-zinc-800/40">
+                  {monthlyAdjustments.map((adj) => {
+                    const monthOrders = activeOrders.filter(o => o.created_at?.startsWith(adj.month));
+                    const monthNetProfit = monthOrders.reduce((s, o) => s + (o.net_profit || 0), 0);
+                    const adsDeduction = (adj.ads_percent / 100) * monthNetProfit;
+                    const returnsDeduction = (adj.returns_percent / 100) * monthNetProfit;
+                    const totalDeduction = adsDeduction + returnsDeduction;
+                    return (
+                      <div key={adj.id} className="px-5 py-3.5 flex items-center justify-between gap-4">
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-semibold text-white">{monthLabel(adj.month)}</p>
+                          <p className="text-[11px] text-zinc-500 mt-0.5">
+                            {monthOrders.length} orders · Net EGP {monthNetProfit.toLocaleString()}
+                            <span className="mx-1.5">·</span>
+                            Ads {adj.ads_percent}% · Returns {adj.returns_percent}%
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-3 shrink-0">
+                          <p className="text-sm font-mono text-red-400 font-medium">− EGP {totalDeduction.toLocaleString(undefined, { maximumFractionDigits: 0 })}</p>
+                          <div className="flex gap-1.5">
+                            <button onClick={() => openEditAdj(adj)}
+                              className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-400 text-xs rounded-lg transition-colors">Edit</button>
+                            <button onClick={() => setDeleteAdjId(adj.id)}
+                              className="px-2.5 py-1 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs rounded-lg transition-colors">Delete</button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  <div className="flex items-center justify-between px-5 py-3.5 bg-zinc-900/40">
+                    <p className="text-sm font-bold text-white">Total Adjustments</p>
+                    <p className="text-sm font-bold text-red-400 font-mono">− EGP {totalAdjDeductions.toLocaleString(undefined, { maximumFractionDigits: 0 })}</p>
+                  </div>
+                </div>
+              )}
+            </div>
+
             {/* ===== Additional Cost per Order ===== */}
             <div className="bg-[#09090b] border border-zinc-800 rounded-xl overflow-hidden">
               <div className="flex items-center justify-between px-5 py-4 border-b border-zinc-800">
@@ -225,7 +351,6 @@ export default function FinancePage() {
                   + Add Item
                 </button>
               </div>
-
               {additionalCosts.length === 0 ? (
                 <div className="text-center text-zinc-600 py-10 text-sm">No items added yet.</div>
               ) : (
@@ -255,14 +380,10 @@ export default function FinancePage() {
             {/* ===== Expenses Ledger ===== */}
             <div className="space-y-3">
               <h2 className="text-lg font-bold text-white">Expenses Ledger</h2>
-
               {expenses.length === 0 ? (
-                <div className="text-center text-zinc-600 py-12 border border-zinc-800 rounded-xl bg-[#09090b] text-sm">
-                  No expenses recorded yet.
-                </div>
+                <div className="text-center text-zinc-600 py-12 border border-zinc-800 rounded-xl bg-[#09090b] text-sm">No expenses recorded yet.</div>
               ) : (
                 <>
-                  {/* Mobile */}
                   <div className="flex flex-col gap-3 md:hidden">
                     {expenses.map((exp) => (
                       <div key={exp.id} className="bg-[#09090b] border border-zinc-800 rounded-xl p-4 space-y-3">
@@ -285,8 +406,6 @@ export default function FinancePage() {
                       </div>
                     ))}
                   </div>
-
-                  {/* Desktop */}
                   <div className="hidden md:block bg-[#09090b] border border-zinc-800 rounded-xl overflow-hidden">
                     <table className="w-full text-left border-collapse">
                       <thead>
@@ -302,9 +421,7 @@ export default function FinancePage() {
                         {expenses.map((exp) => (
                           <tr key={exp.id} className="hover:bg-zinc-900/40 transition-colors">
                             <td className="p-4 font-medium text-white">{exp.title}</td>
-                            <td className="p-4">
-                              <span className="text-xs bg-zinc-900 border border-zinc-800 px-2 py-0.5 rounded text-zinc-400">{exp.category}</span>
-                            </td>
+                            <td className="p-4"><span className="text-xs bg-zinc-900 border border-zinc-800 px-2 py-0.5 rounded text-zinc-400">{exp.category}</span></td>
                             <td className="p-4 text-right text-red-400 font-mono font-medium">− EGP {exp.amount.toLocaleString()}</td>
                             <td className="p-4 text-right text-zinc-500 text-xs">
                               {new Date(exp.created_at).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}
@@ -324,6 +441,20 @@ export default function FinancePage() {
               )}
             </div>
           </>
+        )}
+
+        {/* ===== Delete Adj Confirm ===== */}
+        {deleteAdjId !== null && (
+          <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
+            <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-6 w-full max-w-sm space-y-4">
+              <h2 className="text-lg font-bold text-white">Delete Adjustment?</h2>
+              <p className="text-sm text-zinc-400">This month's ads and returns adjustment will be removed.</p>
+              <div className="flex gap-3">
+                <button onClick={() => setDeleteAdjId(null)} className="flex-1 py-2.5 bg-zinc-900 hover:bg-zinc-800 text-white rounded-lg text-sm font-medium">Cancel</button>
+                <button onClick={() => handleAdjDelete(deleteAdjId)} className="flex-1 py-2.5 bg-red-500 hover:bg-red-600 text-white rounded-lg text-sm font-bold">Delete</button>
+              </div>
+            </div>
+          </div>
         )}
 
         {/* ===== Delete Cost Confirm ===== */}
@@ -350,6 +481,51 @@ export default function FinancePage() {
                 <button onClick={() => setDeleteExpenseId(null)} className="flex-1 py-2.5 bg-zinc-900 hover:bg-zinc-800 text-white rounded-lg text-sm font-medium">Cancel</button>
                 <button onClick={() => handleExpenseDelete(deleteExpenseId)} className="flex-1 py-2.5 bg-red-500 hover:bg-red-600 text-white rounded-lg text-sm font-bold">Delete</button>
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* ===== Monthly Adjustment Modal ===== */}
+        {isAdjModalOpen && (
+          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+            <div className="bg-[#09090b] border border-zinc-800 rounded-xl w-full max-w-sm overflow-hidden">
+              <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-800">
+                <h2 className="text-base font-bold text-white">{editingAdj ? 'Edit Adjustment' : 'Add Monthly Adjustment'}</h2>
+                <button onClick={() => setIsAdjModalOpen(false)} className="text-zinc-500 hover:text-white text-xl leading-none">✕</button>
+              </div>
+              <form onSubmit={handleAdjSubmit} className="p-6 space-y-4">
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-zinc-400 uppercase mb-1">Year</label>
+                    <input type="number" min="2020" max="2099" value={adjForm.year}
+                      onChange={(e) => setAdjForm({ ...adjForm, year: e.target.value })} className={inputClass} />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-zinc-400 uppercase mb-1">Month</label>
+                    <select value={adjForm.month} onChange={(e) => setAdjForm({ ...adjForm, month: e.target.value })} className={inputClass}>
+                      {MONTHS.map(m => <option key={m.value} value={m.value} className="bg-zinc-900">{m.label}</option>)}
+                    </select>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-zinc-400 uppercase mb-1">Ads %</label>
+                  <input type="number" min="0" max="100" step="0.1" placeholder="0" value={adjForm.ads_percent}
+                    onChange={(e) => setAdjForm({ ...adjForm, ads_percent: e.target.value })} className={inputClass} />
+                  <p className="text-[11px] text-zinc-600 mt-1">% من الـ net profit بتاع الشهر ده</p>
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-zinc-400 uppercase mb-1">Returns %</label>
+                  <input type="number" min="0" max="100" step="0.1" placeholder="0" value={adjForm.returns_percent}
+                    onChange={(e) => setAdjForm({ ...adjForm, returns_percent: e.target.value })} className={inputClass} />
+                  <p className="text-[11px] text-zinc-600 mt-1">% من الـ net profit بتاع الشهر ده</p>
+                </div>
+                <div className="flex gap-3 pt-2">
+                  <button type="button" onClick={() => setIsAdjModalOpen(false)} className="flex-1 py-2.5 bg-zinc-900 hover:bg-zinc-800 text-white rounded-lg text-sm font-medium">Cancel</button>
+                  <button type="submit" disabled={isAdjSubmitting} className="flex-1 py-2.5 bg-white hover:bg-zinc-100 text-black rounded-lg text-sm font-bold disabled:opacity-50">
+                    {isAdjSubmitting ? 'Saving...' : editingAdj ? 'Save Changes' : 'Add Adjustment'}
+                  </button>
+                </div>
+              </form>
             </div>
           </div>
         )}
