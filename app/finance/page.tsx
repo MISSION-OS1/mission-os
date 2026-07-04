@@ -35,8 +35,8 @@ interface MonthlyAdjustment {
   id: number;
   drop_id: number;
   month: string;
-  ads_percent: number;
-  returns_percent: number;
+  ads_amount: number;
+  returns_amount: number;
 }
 
 const expenseCategories = ['Marketing', 'Packaging', 'Shipping', 'Salaries', 'Others'];
@@ -89,7 +89,7 @@ export default function FinancePage() {
   const [deleteAdjId, setDeleteAdjId] = useState<number | null>(null);
   const currentYear = new Date().getFullYear().toString();
   const currentMonth = String(new Date().getMonth() + 1).padStart(2, '0');
-  const emptyAdjForm = { year: currentYear, month: currentMonth, ads_percent: '0', returns_percent: '0' };
+  const emptyAdjForm = { year: currentYear, month: currentMonth, ads_amount: '0', returns_amount: '0' };
   const [adjForm, setAdjForm] = useState(emptyAdjForm);
 
   const inputClass = "w-full bg-[#121214] border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-zinc-600 transition-colors placeholder-zinc-600";
@@ -182,7 +182,7 @@ export default function FinancePage() {
   const openEditAdj = (adj: MonthlyAdjustment) => {
     setEditingAdj(adj);
     const [year, month] = adj.month.split('-');
-    setAdjForm({ year, month, ads_percent: adj.ads_percent.toString(), returns_percent: adj.returns_percent.toString() });
+    setAdjForm({ year, month, ads_amount: adj.ads_amount.toString(), returns_amount: adj.returns_amount.toString() });
     setIsAdjModalOpen(true);
   };
   const handleAdjSubmit = async (e: React.FormEvent) => {
@@ -193,8 +193,8 @@ export default function FinancePage() {
     const payload = {
       drop_id: dropId,
       month: monthKey,
-      ads_percent: parseFloat(adjForm.ads_percent) || 0,
-      returns_percent: parseFloat(adjForm.returns_percent) || 0,
+      ads_amount: parseFloat(adjForm.ads_amount) || 0,
+      returns_amount: parseFloat(adjForm.returns_amount) || 0,
     };
     if (editingAdj) {
       await supabase.from('monthly_adjustments').update(payload).eq('id', editingAdj.id);
@@ -224,10 +224,7 @@ export default function FinancePage() {
   // حساب الـ monthly adjustments — كل شهر بياخد % من الـ net profit بتاعه
   const totalAdjDeductions = monthlyAdjustments.reduce((s, adj) => {
     const monthOrders = activeOrders.filter(o => o.created_at?.startsWith(adj.month));
-    const monthNetProfit = monthOrders.reduce((ms, o) => ms + (o.net_profit || 0), 0);
-    const adsDeduction = (adj.ads_percent / 100) * monthNetProfit;
-    const returnsDeduction = (adj.returns_percent / 100) * monthNetProfit;
-    return s + adsDeduction + returnsDeduction;
+    return s + (adj.ads_amount || 0) + (adj.returns_amount || 0);
   }, 0);
 
   const totalNetProfit = baseNetProfit - totalAdjDeductions;
@@ -305,18 +302,15 @@ export default function FinancePage() {
                 <div className="divide-y divide-zinc-800/40">
                   {monthlyAdjustments.map((adj) => {
                     const monthOrders = activeOrders.filter(o => o.created_at?.startsWith(adj.month));
-                    const monthNetProfit = monthOrders.reduce((s, o) => s + (o.net_profit || 0), 0);
-                    const adsDeduction = (adj.ads_percent / 100) * monthNetProfit;
-                    const returnsDeduction = (adj.returns_percent / 100) * monthNetProfit;
-                    const totalDeduction = adsDeduction + returnsDeduction;
+                    const totalDeduction = (adj.ads_amount || 0) + (adj.returns_amount || 0);
                     return (
                       <div key={adj.id} className="px-5 py-3.5 flex items-center justify-between gap-4">
                         <div className="flex-1 min-w-0">
                           <p className="text-sm font-semibold text-white">{monthLabel(adj.month)}</p>
                           <p className="text-[11px] text-zinc-500 mt-0.5">
-                            {monthOrders.length} orders · Net EGP {monthNetProfit.toLocaleString()}
+                            {monthOrders.length} orders
                             <span className="mx-1.5">·</span>
-                            Ads {adj.ads_percent}% · Returns {adj.returns_percent}%
+                            Ads EGP {adj.ads_amount.toLocaleString()} · Returns EGP {adj.returns_amount.toLocaleString()}
                           </p>
                         </div>
                         <div className="flex items-center gap-3 shrink-0">
@@ -508,16 +502,14 @@ export default function FinancePage() {
                   </div>
                 </div>
                 <div>
-                  <label className="block text-xs font-semibold text-zinc-400 uppercase mb-1">Ads %</label>
-                  <input type="number" min="0" max="100" step="0.1" placeholder="0" value={adjForm.ads_percent}
-                    onChange={(e) => setAdjForm({ ...adjForm, ads_percent: e.target.value })} className={inputClass} />
-                  <p className="text-[11px] text-zinc-600 mt-1">% من الـ net profit بتاع الشهر ده</p>
+                  <label className="block text-xs font-semibold text-zinc-400 uppercase mb-1">Ads (EGP)</label>
+                  <input type="number" min="0" step="0.01" placeholder="0.00" value={adjForm.ads_amount}
+                    onChange={(e) => setAdjForm({ ...adjForm, ads_amount: e.target.value })} className={inputClass} />
                 </div>
                 <div>
-                  <label className="block text-xs font-semibold text-zinc-400 uppercase mb-1">Returns %</label>
-                  <input type="number" min="0" max="100" step="0.1" placeholder="0" value={adjForm.returns_percent}
-                    onChange={(e) => setAdjForm({ ...adjForm, returns_percent: e.target.value })} className={inputClass} />
-                  <p className="text-[11px] text-zinc-600 mt-1">% من الـ net profit بتاع الشهر ده</p>
+                  <label className="block text-xs font-semibold text-zinc-400 uppercase mb-1">Returns (EGP)</label>
+                  <input type="number" min="0" step="0.01" placeholder="0.00" value={adjForm.returns_amount}
+                    onChange={(e) => setAdjForm({ ...adjForm, returns_amount: e.target.value })} className={inputClass} />
                 </div>
                 <div className="flex gap-3 pt-2">
                   <button type="button" onClick={() => setIsAdjModalOpen(false)} className="flex-1 py-2.5 bg-zinc-900 hover:bg-zinc-800 text-white rounded-lg text-sm font-medium">Cancel</button>
