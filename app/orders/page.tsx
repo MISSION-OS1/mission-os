@@ -184,11 +184,7 @@ export default function OrdersPage() {
 
 
 
-  const adjustSalesCount = async (productId: number, delta: number) => {
-    const { data: prod } = await supabase.from("products").select("sales_count").eq("id", productId).single();
-    const newCount = Math.max(0, (prod?.sales_count || 0) + delta);
-    await supabase.from("products").update({ sales_count: newCount }).eq("id", productId);
-  };
+
 
   const openCancelModal = (order: any) => { setCancelingOrder(order); setFlyerCostInput("5"); };
 
@@ -238,9 +234,7 @@ export default function OrdersPage() {
       await supabase.from("orders").update(payload).eq("id", editingOrder.id);
     } else {
       await supabase.from("orders").insert([payload]);
-      if (variantId && !isInactiveStatus(formData.status)) {
-        if (productId) await adjustSalesCount(productId, 1);
-      }
+
     }
     setIsModalOpen(false);
     fetchData();
@@ -248,9 +242,6 @@ export default function OrdersPage() {
 
   const handleDelete = async (id: number) => {
     const order = orders.find(o => o.id === id);
-    if (order?.product_id && !isInactiveStatus(order.status)) {
-      await adjustSalesCount(order.product_id, -1);
-    }
     await supabase.from("orders").delete().eq("id", id);
     setDeleteConfirmId(null);
     fetchData();
@@ -353,7 +344,7 @@ export default function OrdersPage() {
         net_profit: netProfit, status: "pending", drop_id: dropId,
         unit_cost: row.matched_product.cost,
       }]);
-      await adjustSalesCount(row.matched_product.id, 1);
+
       imported++;
     }
     setImportSummary({ imported, skipped });
