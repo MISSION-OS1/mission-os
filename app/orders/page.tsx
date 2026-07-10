@@ -182,17 +182,7 @@ export default function OrdersPage() {
     setIsModalOpen(true);
   };
 
-  const adjustVariantStock = async (variantId: number, qtyChange: number) => {
-    const { data } = await supabase.from("product_variants").select("stock, product_id").eq("id", variantId).single();
-    if (!data) return;
-    const newStock = Math.max(0, data.stock + qtyChange);
-    await supabase.from("product_variants").update({ stock: newStock }).eq("id", variantId);
-    const { data: allVariants } = await supabase.from("product_variants").select("stock").eq("product_id", data.product_id);
-    if (allVariants) {
-      const total = allVariants.reduce((s: number, v: any) => s + v.stock, 0);
-      await supabase.from("products").update({ stock: total }).eq("id", data.product_id);
-    }
-  };
+
 
   const adjustSalesCount = async (productId: number, delta: number) => {
     const { data: prod } = await supabase.from("products").select("sales_count").eq("id", productId).single();
@@ -205,9 +195,6 @@ export default function OrdersPage() {
   const confirmCancel = async () => {
     if (!cancelingOrder) return;
     const flyerCost = parseFloat(flyerCostInput) || 0;
-    if (cancelingOrder.variant_id && !isInactiveStatus(cancelingOrder.status)) {
-      await adjustVariantStock(cancelingOrder.variant_id, cancelingOrder.quantity || 1);
-    }
     await supabase.from("orders").update({ status: "canceled", flyer_cost: flyerCost }).eq("id", cancelingOrder.id);
     if (editingOrder?.id === cancelingOrder.id) setIsModalOpen(false);
     setCancelingOrder(null);
@@ -249,21 +236,9 @@ export default function OrdersPage() {
       const wasInactive = isInactiveStatus(editingOrder.status);
       const nowInactive = isInactiveStatus(formData.status);
       await supabase.from("orders").update(payload).eq("id", editingOrder.id);
-      if (variantId) {
-        const variantChanged = oldVariantId !== variantId;
-        if (variantChanged) {
-          if (oldVariantId && !wasInactive) await adjustVariantStock(oldVariantId, oldQty);
-          if (!nowInactive) await adjustVariantStock(variantId, -qty);
-        } else {
-          if (wasInactive && !nowInactive) await adjustVariantStock(variantId, -qty);
-          else if (!wasInactive && nowInactive) await adjustVariantStock(variantId, oldQty);
-          else if (!wasInactive && !nowInactive && oldQty !== qty) await adjustVariantStock(variantId, oldQty - qty);
-        }
-      }
     } else {
       await supabase.from("orders").insert([payload]);
       if (variantId && !isInactiveStatus(formData.status)) {
-        await adjustVariantStock(variantId, -qty);
         if (productId) await adjustSalesCount(productId, 1);
       }
     }
@@ -273,9 +248,8 @@ export default function OrdersPage() {
 
   const handleDelete = async (id: number) => {
     const order = orders.find(o => o.id === id);
-    if (order?.variant_id && !isInactiveStatus(order.status)) {
-      await adjustVariantStock(order.variant_id, order.quantity || 1);
-      if (order.product_id) await adjustSalesCount(order.product_id, -1);
+    if (order?.product_id && !isInactiveStatus(order.status)) {
+      await adjustSalesCount(order.product_id, -1);
     }
     await supabase.from("orders").delete().eq("id", id);
     setDeleteConfirmId(null);
@@ -300,10 +274,6 @@ export default function OrdersPage() {
     if (!replacingOrder || !replacingVariant || !replacingProduct) return;
     const qty = parseInt(replacingQty) || 1;
     const newShipping = parseFloat(replacingShippingPrice) || 0;
-    if (replacingOrder.variant_id && !isInactiveStatus(replacingOrder.status)) {
-      await adjustVariantStock(replacingOrder.variant_id, replacingOrder.quantity || 1);
-    }
-    await adjustVariantStock(replacingVariant.id, -qty);
     const newTotal  = replacingProduct.price * qty;
     const newProfit = newTotal - (replacingProduct.cost * qty);
     const keepStatus = isInactiveStatus(replacingOrder.status) ? "pending" : replacingOrder.status;
@@ -383,7 +353,6 @@ export default function OrdersPage() {
         net_profit: netProfit, status: "pending", drop_id: dropId,
         unit_cost: row.matched_product.cost,
       }]);
-      await adjustVariantStock(row.matched_variant.id, -row.quantity);
       await adjustSalesCount(row.matched_product.id, 1);
       imported++;
     }
